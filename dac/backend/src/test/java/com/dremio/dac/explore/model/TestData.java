@@ -15,7 +15,7 @@
  */
 package com.dremio.dac.explore.model;
 
-import static com.dremio.service.jobs.RecordBatchHolder.newRecordBatchHolder;
+import static com.dremio.exec.record.RecordBatchHolder.newRecordBatchHolder;
 import static java.util.Arrays.asList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -31,6 +31,7 @@ import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
@@ -56,6 +57,8 @@ import org.apache.arrow.vector.complex.impl.UnionListWriter;
 import org.apache.arrow.vector.complex.impl.UnionWriter;
 import org.apache.arrow.vector.complex.writer.BaseWriter.StructWriter;
 import org.apache.arrow.vector.complex.writer.VarCharWriter;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.DecimalUtility;
 import org.apache.commons.lang3.tuple.Pair;
 import org.junit.AfterClass;
@@ -73,10 +76,10 @@ import com.dremio.dac.model.job.JobDataFragmentWrapper.JobDataFragmentSerializer
 import com.dremio.dac.proto.model.dataset.DataType;
 import com.dremio.exec.record.BatchSchema.SelectionVectorMode;
 import com.dremio.exec.record.RecordBatchData;
+import com.dremio.exec.record.RecordBatchHolder;
 import com.dremio.exec.record.VectorContainer;
 import com.dremio.service.job.proto.JobId;
 import com.dremio.service.jobs.JobDataFragmentImpl;
-import com.dremio.service.jobs.RecordBatchHolder;
 import com.dremio.service.jobs.RecordBatches;
 import com.dremio.test.AllocatorRule;
 import com.dremio.test.DremioTest;
@@ -85,8 +88,6 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * Unittests for {@link com.dremio.dac.model.job.JobDataFragmentWrapper}. Currently it only tests the serialization aspects such as
@@ -680,7 +681,7 @@ public class TestData extends DremioTest {
       if (values.get(i) == null) {
         valuesVector.setNull(i);
       } else {
-        DecimalUtility.writeBigDecimalToArrowBuf(values.get(i), tempBuf, 0);
+        DecimalUtility.writeBigDecimalToArrowBuf(values.get(i), tempBuf, 0, DecimalVector.TYPE_WIDTH);
         valuesVector.set(i, tempBuf);
       }
     }
@@ -790,7 +791,7 @@ public class TestData extends DremioTest {
   }
 
   private static Pair<NonNullableStructVector, ResultVerifier> testMapVector(final int startIndexInCurrentOutput, final int startIndexInJob) {
-    NonNullableStructVector colStructV = new NonNullableStructVector("colMap", allocator, null);
+    NonNullableStructVector colStructV = new NonNullableStructVector("colMap", allocator, new FieldType(false, ArrowType.Struct.INSTANCE, null),null);
 
     ComplexWriterImpl structWriter = new ComplexWriterImpl("colMap", colStructV);
 
@@ -852,13 +853,13 @@ public class TestData extends DremioTest {
         assertEquals("{colMap={nBigIntCol=223, nVarCharCol=long long value, nListCol=[1969-12-29]}}", output.extractValue("colMap", index).toString());
         assertEquals(cellUrl(uIndex++, "colMap"), output.extractUrl("colMap", index++));
 
-        assertEquals("{colMap={nBigIntCol=54645, nMapCol={a=1}}}", output.extractValue("colMap", index).toString());
+        assertEquals("{colMap={nBigIntCol=54645, nUnionCol=null, nMapCol={a=1}}}", output.extractValue("colMap", index).toString());
         assertNull(output.extractUrl("colMap", index++));
 
         assertEquals("{}", output.extractValue("colMap", index).toString());
         assertNull(output.extractUrl("colMap", index++));
 
-        assertEquals("{colMap={nBigIntCol=234543}}", output.extractValue("colMap", index).toString());
+        assertEquals("{colMap={nBigIntCol=234543, nUnionCol=null}}", output.extractValue("colMap", index).toString());
         assertNull(output.extractUrl("colMap", index++));
       }
     };

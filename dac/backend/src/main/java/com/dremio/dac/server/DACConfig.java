@@ -119,6 +119,10 @@ public final class DACConfig {
     return with(DremioConfig.JOBS_ENABLED_BOOL, enabled);
   }
 
+  public DACConfig noOpClusterCoordinatorEnabled(boolean enabled) {
+    return with(DremioConfig.NO_OP_CLUSTER_COORDINATOR_ENABLED, enabled);
+  }
+
   public DACConfig autoPort(boolean autoPort) {
     return with(DremioConfig.DEBUG_AUTOPORT_BOOL, autoPort);
   }
@@ -149,6 +153,10 @@ public final class DACConfig {
 
   public DACConfig writePath(String writePath) {
     return with(DremioConfig.LOCAL_WRITE_PATH_STRING, writePath);
+  }
+
+  public DACConfig distWritePath(String writePath) {
+    return with(DremioConfig.DIST_WRITE_PATH_STRING, writePath);
   }
 
   public DACConfig clusterMode(ClusterMode clusterMode) {
@@ -207,5 +215,9 @@ public final class DACConfig {
     return new DACConfig(
         DremioConfig.create(null, config)
         ).debug(true);
+  }
+
+  public boolean isMigrationEnabled() {
+    return config.hasPath(DremioConfig.MIGRATION_ENABLED) && config.getBoolean(DremioConfig.MIGRATION_ENABLED);
   }
 }

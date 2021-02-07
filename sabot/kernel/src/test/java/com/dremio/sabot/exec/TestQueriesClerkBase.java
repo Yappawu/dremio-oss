@@ -26,6 +26,7 @@ import java.util.List;
 
 import org.apache.arrow.memory.AllocationListener;
 import org.apache.arrow.memory.AllocationReservation;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.BufferManager;
 import org.junit.After;
@@ -37,9 +38,6 @@ import com.dremio.exec.proto.CoordExecRPC;
 import com.dremio.exec.proto.ExecProtos;
 import com.dremio.exec.proto.UserBitShared;
 import com.dremio.sabot.exec.rpc.ExecToCoordTunnel;
-
-import io.netty.buffer.ArrowBuf;
-import io.netty.buffer.ByteBufAllocator;
 
 /**
  * Base class for TestQueriesClerk
@@ -151,9 +149,6 @@ public class TestQueriesClerkBase {
     public ArrowBuf buffer(long var1, BufferManager var2) {
       throw new UnsupportedOperationException();
     }
-    public ByteBufAllocator getAsByteBufAllocator() {
-      throw new UnsupportedOperationException();
-    }
     public long getAllocatedMemory() {
       throw new UnsupportedOperationException();
     }
@@ -200,6 +195,26 @@ public class TestQueriesClerkBase {
     }
     public void assertOpen() {
       throw new UnsupportedOperationException();
+    }
+    @Override
+    public AllocationListener getListener() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void releaseBytes(long size) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean forceAllocate(long size) {
+      throw new UnsupportedOperationException();
+
+    }
+
+    @Override
+    public BufferAllocator getRoot() {
+      return this;
     }
   }
 

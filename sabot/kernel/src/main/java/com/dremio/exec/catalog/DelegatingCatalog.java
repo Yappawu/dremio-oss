@@ -17,6 +17,7 @@ package com.dremio.exec.catalog;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -33,7 +34,10 @@ import com.dremio.exec.store.DatasetRetrievalOptions;
 import com.dremio.exec.store.PartitionNotFoundException;
 import com.dremio.exec.store.StoragePlugin;
 import com.dremio.exec.store.dfs.IcebergTableProps;
-import com.dremio.exec.store.ischema.tables.TablesTable;
+import com.dremio.service.catalog.Schema;
+import com.dremio.service.catalog.SearchQuery;
+import com.dremio.service.catalog.Table;
+import com.dremio.service.catalog.TableSchema;
 import com.dremio.service.namespace.NamespaceAttribute;
 import com.dremio.service.namespace.NamespaceException;
 import com.dremio.service.namespace.NamespaceKey;
@@ -55,6 +59,11 @@ public class DelegatingCatalog implements Catalog {
   }
 
   @Override
+  public void validateSelection() {
+    delegate.validateSelection();
+  }
+
+  @Override
   public DremioTable getTableNoResolve(NamespaceKey key) {
     return delegate.getTableNoResolve(key);
   }
@@ -67,11 +76,6 @@ public class DelegatingCatalog implements Catalog {
   @Override
   public void addOrUpdateDataset(NamespaceKey key, DatasetConfig dataset) throws NamespaceException {
     delegate.addOrUpdateDataset(key, dataset);
-  }
-
-  @Override
-  public void deleteDataset(NamespaceKey key, String version) throws NamespaceException {
-    delegate.deleteDataset(key, version);
   }
 
   @Override
@@ -105,7 +109,7 @@ public class DelegatingCatalog implements Catalog {
   }
 
   @Override
-  public Iterable<TablesTable.Table> listDatasets(NamespaceKey path) {
+  public Iterable<Table> listDatasets(NamespaceKey path) {
     return delegate.listDatasets(path);
   }
 
@@ -125,8 +129,18 @@ public class DelegatingCatalog implements Catalog {
   }
 
   @Override
+  public Catalog resolveCatalog(boolean checkValidity) {
+    return delegate.resolveCatalog(checkValidity);
+  }
+
+  @Override
   public Catalog resolveCatalog(String username, NamespaceKey newDefaultSchema) {
     return delegate.resolveCatalog(username, newDefaultSchema);
+  }
+
+  @Override
+  public Catalog resolveCatalog(String username, NamespaceKey newDefaultSchema, boolean checkValidity) {
+    return delegate.resolveCatalog(username, newDefaultSchema, checkValidity);
   }
 
   @Override
@@ -173,6 +187,11 @@ public class DelegatingCatalog implements Catalog {
   @Override
   public void dropTable(NamespaceKey key) {
     delegate.dropTable(key);
+  }
+
+  @Override
+  public void forgetTable(NamespaceKey key) {
+    delegate.forgetTable(key);
   }
 
   @Override
@@ -253,5 +272,30 @@ public class DelegatingCatalog implements Catalog {
   @Override
   public boolean alterDataset(final NamespaceKey key, final Map<String, AttributeValue> attributes) {
     return delegate.alterDataset(key, attributes);
+  }
+
+  @Override
+  public Iterator<com.dremio.service.catalog.Catalog> listCatalogs(SearchQuery searchQuery) {
+    return delegate.listCatalogs(searchQuery);
+  }
+
+  @Override
+  public Iterator<Schema> listSchemata(SearchQuery searchQuery) {
+    return delegate.listSchemata(searchQuery);
+  }
+
+  @Override
+  public Iterator<Table> listTables(SearchQuery searchQuery) {
+    return delegate.listTables(searchQuery);
+  }
+
+  @Override
+  public Iterator<com.dremio.service.catalog.View> listViews(SearchQuery searchQuery) {
+    return delegate.listViews(searchQuery);
+  }
+
+  @Override
+  public Iterator<TableSchema> listTableSchemata(SearchQuery searchQuery) {
+    return delegate.listTableSchemata(searchQuery);
   }
 }

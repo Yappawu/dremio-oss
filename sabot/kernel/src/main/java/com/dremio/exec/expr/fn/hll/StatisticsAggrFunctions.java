@@ -18,6 +18,7 @@ package com.dremio.exec.expr.fn.hll;
 
 import javax.inject.Inject;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.BigIntHolder;
 import org.apache.arrow.vector.holders.NullableBigIntHolder;
@@ -43,8 +44,6 @@ import com.dremio.exec.expr.annotations.FunctionTemplate.NullHandling;
 import com.dremio.exec.expr.annotations.Output;
 import com.dremio.exec.expr.annotations.Param;
 import com.dremio.exec.expr.annotations.Workspace;
-
-import io.netty.buffer.ArrowBuf;
 
 @SuppressWarnings({"deprecation"})
 public class StatisticsAggrFunctions {
@@ -675,8 +674,8 @@ public class StatisticsAggrFunctions {
     @Override
     public void add() {
       if(in.isSet == 1) {
-        ((com.dremio.exec.expr.fn.hll.HLLAccum) work.obj).addBytes(in.buffer, in.start, in.start
-          + org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH);
+        ((com.dremio.exec.expr.fn.hll.HLLAccum) work.obj).addBytes(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start),
+          org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start) + org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       }
     }
 

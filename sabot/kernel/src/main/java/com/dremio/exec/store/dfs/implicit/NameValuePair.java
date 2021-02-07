@@ -17,7 +17,7 @@ package com.dremio.exec.store.dfs.implicit;
 
 import com.dremio.exec.store.dfs.implicit.AdditionalColumnsRecordReader.Populator;
 
-public abstract class NameValuePair<V> {
+public abstract class NameValuePair<V> implements AutoCloseable {
   final String name;
   final V value;
 
@@ -36,4 +36,11 @@ public abstract class NameValuePair<V> {
 
   public abstract Populator createPopulator();
 
+  // Return Integer.MAX_VALUE for variable-sized types
+  public abstract int getValueTypeSize();
+
+  public abstract byte[] getValueBytes();
+
+  @Override
+  public void close() throws Exception {}
 }

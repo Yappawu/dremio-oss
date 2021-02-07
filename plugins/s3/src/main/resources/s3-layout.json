@@ -114,10 +114,15 @@
                 "propName": "config.compatibilityMode"
               },
               {
-
                 "propName": "config.requesterPays"
-
               },
+              {
+                "propName": "config.enableFileStatusCheck"
+              }
+            ]
+          },
+          {
+            "elements": [
               {
                 "propName": "config.rootPath"
               },
@@ -150,6 +155,7 @@
           },
           {
             "name": "Cache Options",
+            "checkboxController": "enableAsync",
             "elements": [
               {
                 "propName": "config.isCachingEnabled"

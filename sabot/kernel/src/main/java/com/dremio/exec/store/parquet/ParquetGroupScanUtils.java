@@ -23,14 +23,17 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.parquet.schema.OriginalType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 
 import com.carrotsearch.hppc.cursors.ObjectLongCursor;
+import com.dremio.common.expression.CompleteType;
 import com.dremio.common.expression.SchemaPath;
 import com.dremio.common.types.TypeProtos.MajorType;
 import com.dremio.common.types.TypeProtos.MinorType;
@@ -45,7 +48,7 @@ import com.dremio.exec.planner.cost.ScanCostFactor;
 import com.dremio.exec.planner.physical.visitor.GlobalDictionaryFieldInfo;
 import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
 import com.dremio.exec.record.BatchSchema;
-import com.dremio.exec.server.options.SystemOptionManager;
+import com.dremio.exec.record.SearchableBatchSchema;
 import com.dremio.exec.store.dfs.CompleteFileWork.FileWorkImpl;
 import com.dremio.exec.store.dfs.FileSelection;
 import com.dremio.exec.store.dfs.FileSystemPlugin;
@@ -92,7 +95,7 @@ public class ParquetGroupScanUtils {
   // Preserve order of insertion, need it to prune the map later if it goes above threshold.
   private Map<SchemaPath, MajorType> columnTypeMap = Maps.newLinkedHashMap();
 
-  private final BatchSchema schema;
+  private final SearchableBatchSchema schema;
   private final OptionManager optionManager;
 
   /**
@@ -109,9 +112,9 @@ public class ParquetGroupScanUtils {
     List<SchemaPath> columns,
     BatchSchema schema,
     Map<String, GlobalDictionaryFieldInfo> globalDictionaryColumns,
-    List<ParquetFilterCondition> conditions, SystemOptionManager optionManager)
+    List<ParquetFilterCondition> conditions, OptionManager optionManager)
       throws IOException {
-    this.schema = schema;
+    this.schema = SearchableBatchSchema.of(schema);
     this.formatPlugin = formatPlugin;
     this.conditions = conditions;
     this.columns = columns;
@@ -153,6 +156,12 @@ public class ParquetGroupScanUtils {
     return globalDictionaryColumns;
   }
 
+  private boolean isFieldTypeUnion(SchemaPath schemaPath) {
+    // if field present in schema is of union type, then don't use it as partitioned column
+    Optional<Field> field = this.schema.findFieldIgnoreCase(schemaPath.getRootSegment().getNameSegment().getPath());
+    return field.isPresent() && CompleteType.fromField(field.get()).isUnion();
+  }
+
   /**
    * When reading the very first footer, any column is a potential partition column. So for the first footer, we check
    * every column to see if it is single valued, and if so, add it to the list of potential partition columns. For the
@@ -166,11 +175,12 @@ public class ParquetGroupScanUtils {
     if (schemaPath.getAsUnescapedPath().equals(UPDATE_COLUMN)) {
       return true;
     }
+
     final PrimitiveTypeName primitiveType = fileMetadata.getPrimitiveType(columnMetadata.getName());
     final OriginalType originalType = fileMetadata.getOriginalType(columnMetadata.getName());
 
     if (first) {
-      if (hasSingleValue(columnMetadata, rowCount)) {
+      if (hasSingleValue(columnMetadata, rowCount) && !isFieldTypeUnion(schemaPath)) {
         logger.debug("New partition {} added to list, table {}, file {}, rowgroup index {}",
             schemaPath, selectionRoot, fileMetadata.getPathString(), rowGroupIdx);
         columnTypeMap.put(schemaPath, getType(primitiveType, originalType));

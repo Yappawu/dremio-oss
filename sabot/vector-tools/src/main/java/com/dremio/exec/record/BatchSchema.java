@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -355,6 +356,61 @@ public class BatchSchema extends org.apache.arrow.vector.types.pojo.Schema imple
     return thisUpperCaseFields.equals(thatUpperCaseFields);
   }
 
+  private boolean compareFields(List<Field> srcFields, List<Field> tgtFields) {
+    if (srcFields == null && tgtFields == null) {
+      return true;
+    }
+    if (srcFields == null || tgtFields == null) {
+      return false;
+    }
+    if (srcFields.size() != tgtFields.size()) {
+      return false;
+    }
+    Map<String, Field> srcChildrenFields = new HashMap<>();
+    for(Field srcField: srcFields) {
+      srcChildrenFields.put(srcField.getName().toLowerCase(), srcField);
+    }
+
+    for(Field tgtChildField: tgtFields) {
+      Field srcChildField = srcChildrenFields.get(tgtChildField.getName().toLowerCase());
+      if (srcChildField == null) {
+        return false;
+      }
+      if (!compareField(srcChildField, tgtChildField)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private boolean compareField(Field src, Field tgt) {
+    Preconditions.checkArgument(src !=null && tgt != null, "Unexpected state");
+    if(!src.getName().toLowerCase().equalsIgnoreCase(tgt.getName().toLowerCase())) {
+      return false;
+    }
+
+    boolean typesEqual;
+    CompleteType srcCompleteType = CompleteType.fromField(src);
+    CompleteType tgtCompleteType = CompleteType.fromField(tgt);
+    if(srcCompleteType.isUnion() && tgtCompleteType.isUnion()) {
+      return compareFields(srcCompleteType.getChildren(), tgtCompleteType.getChildren());
+    } else {
+      typesEqual = Objects.equals(src.getType(), tgt.getType());
+    }
+    if(!Objects.equals(src.isNullable(), tgt.isNullable()) ||
+      !typesEqual ||
+      !Objects.equals(src.getDictionary(), tgt.getDictionary()) ||
+      !Objects.equals(src.getMetadata(), tgt.getMetadata())) {
+      return false;
+    }
+    return compareFields(src.getChildren(), tgt.getChildren());
+  }
+
+  public boolean equalsTypesWithoutPositions(BatchSchema that) {
+    return compareFields(this.getFields(), that.getFields()) && Objects.equals(this.selectionVectorMode, that.selectionVectorMode);
+  }
+
   public boolean equalsTypesAndPositions(BatchSchema schema){
     List<CompleteType> typesA = FluentIterable.from(getFields()).transform(TO_TYPES).toList();
     List<CompleteType> typesB = FluentIterable.from(schema.getFields()).transform(TO_TYPES).toList();
@@ -389,8 +445,6 @@ public class BatchSchema extends org.apache.arrow.vector.types.pojo.Schema imple
     org.apache.arrow.vector.types.pojo.Schema s = org.apache.arrow.vector.types.pojo.Schema.convertSchema(schema);
     return new BatchSchema(SelectionVectorMode.NONE, s.getFields());
   }
-
-
 
   public int serialize(FlatBufferBuilder builder) {
     Preconditions.checkArgument(selectionVectorMode == SelectionVectorMode.NONE,
@@ -574,10 +628,31 @@ public class BatchSchema extends org.apache.arrow.vector.types.pojo.Schema imple
     return false;
   }
 
+  public BatchSchema merge(BatchSchema schemaToMergeIntoThis, boolean mixedTypesDisabled) {
+    if (mixedTypesDisabled) {
+      return mergeWithUpPromotion(schemaToMergeIntoThis);
+    } else {
+      return merge(schemaToMergeIntoThis);
+    }
+  }
+
   public BatchSchema merge(BatchSchema schemaToMergeIntoThis){
     List<Field> original = ImmutableList.copyOf(this);
     List<Field> newlyObserved = ImmutableList.copyOf(schemaToMergeIntoThis);
     return new BatchSchema(SelectionVectorMode.NONE, mergeFieldLists(original, newlyObserved));
+  }
+
+  public BatchSchema mergeWithUpPromotion(BatchSchema fileSchema){
+    List<Field> fileFields = ImmutableList.copyOf(fileSchema);
+    return new BatchSchema(SelectionVectorMode.NONE, mergeWithUpPromotion(fileFields));
+  }
+
+  private List<Field> mergeWithUpPromotion(List<Field> fileFields) {
+    try {
+      return CompleteType.mergeFieldListsWithUpPromotionOrCoercion(ImmutableList.copyOf(this), fileFields);
+    } catch (UnsupportedOperationException e) {
+      throw UserException.unsupportedError().message(e.getMessage()).build(logger);
+    }
   }
 
   private static List<Field> mergeFieldLists(List<Field> original, List<Field> newlyObserved) {

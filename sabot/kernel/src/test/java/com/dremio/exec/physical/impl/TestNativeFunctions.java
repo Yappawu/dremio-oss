@@ -42,9 +42,9 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import com.dremio.common.expression.InExpression;
 import com.dremio.common.expression.SupportedEngines;
 import com.dremio.exec.ExecConstants;
-import com.dremio.exec.expr.InExpression;
 import com.dremio.exec.physical.base.OpProps;
 import com.dremio.exec.physical.config.Project;
 import com.dremio.exec.planner.physical.PlannerSettings;
@@ -125,6 +125,19 @@ public class TestNativeFunctions extends BaseTestFunction {
     });
     testFunctions(new Object[][]{
       {"extractYear(castTIMESTAMP(c0))","1979-10-10", 1979l}
+    });
+  }
+
+  @Test
+  public void testTimestampDiffMonth() throws Exception {
+    testFunctions(new Object[][] {
+      {"timestampdiffMonth(c0, c1)", date("2019-01-31"), date("2019-02-28"), 1},
+      {"timestampdiffMonth(c0, c1)", date("2020-01-31"), date("2020-02-28"), 0},
+      {"timestampdiffMonth(c0, c1)", date("2020-01-31"), date("2020-02-29"), 1},
+      {"timestampdiffMonth(c0, c1)", date("2019-03-31"), date("2019-04-30"), 1},
+      {"timestampdiffMonth(c0, c1)", date("2020-03-30"), date("2020-02-29"), -1},
+      {"timestampdiffMonth(c0, c1)", date("2020-05-31"), date("2020-09-30"), 4},
+      {"timestampdiffMonth(c0, c1)", date("2019-10-10"), date("2020-11-21"), 13}
     });
   }
 
@@ -582,14 +595,13 @@ public class TestNativeFunctions extends BaseTestFunction {
           execPreferenceMixed
         ));
       InExpression.COUNT.set(0);
-      // Note: This test casts the string as a BigINT. For now, this is not available in Gandiva
+      // Note: ceil() is not available in Gandiva
       // Hence, this leads to excessive splits and will eventually be implemented in Java using
-      // the OrIn optimization
+      // the OrIn optimization.
       testFunctions(new Object[][]{
-        {"booleanOr(c0 = 1l, c0 = 2l, c0 = 3l, c0 != 10l, c0 = 4l, c0 = 5l, c0 = 6l, c0 = 7l, c0 " +
-          "= 8l, c0 = 9l)", "10", false}}
+        {"booleanOr(ceil(c0) = 1l, ceil(c0) = 2l, ceil(c0) = 3l, ceil(c0) != 10l, ceil(c0) = 4l, ceil(c0) = 5l, ceil(c0) = 6l, ceil(c0) = 7l, ceil(c0) " +
+          "= 8l, ceil(c0) = 9l)", 10, false}}
       );
-      // should switch to java and evaluate an in
       Assert.assertEquals(1, InExpression.COUNT.get());
     } finally {
       InExpression.COUNT.set(0);
@@ -608,11 +620,10 @@ public class TestNativeFunctions extends BaseTestFunction {
       ));
       InExpression.COUNT.set(0);
       testFunctions(new Object[][]{
-        {"booleanOr(c0 = '1', c0 = '2', c0 = '3', c0 != '4', c0 = '5', c0 = " +
-          "'6', c0 = '7', c0 = '8', c0 = '9', c0 = " +
+        {"booleanOr(ceil(c0) = '1', ceil(c0) = '2', ceil(c0) = '3', ceil(c0) != '4', ceil(c0) = '5', ceil(c0) = " +
+          "'6', ceil(c0) = '7', ceil(c0) = '8', ceil(c0) = '9', ceil(c0) = " +
           "'10')", 9l, true}}
       );
-      // should switch to java and evaluate an in
       Assert.assertEquals(1, InExpression.COUNT.get());
     } finally {
       InExpression.COUNT.set(0);
@@ -724,6 +735,170 @@ public class TestNativeFunctions extends BaseTestFunction {
     }
   }
 
+  @Test
+  public void testBitwiseFunctions() throws Exception {
+    // bitwise AND
+    testFunctions(new Object[][]{
+      {"bitwise_and(c0, c1)", 0x0147D, 0x17159, 0x01059},
+      {"bitwise_and(c0, c1)", 0xFFFFFFCC, 0x00000297, 0x00000284},
+      {"bitwise_and(c0, c1)", 0x000, 0x285, 0x000},
+      {"bitwise_and(c0, c1)", 0x563672F83L, 0x0D9FCF85BL, 0x041642803L},
+      {"bitwise_and(c0, c1)", 0xFFFFFFFFFFDA8F6AL, 0xFFFFFFFFFFFF791CL, 0xFFFFFFFFFFDA0908L},
+      {"bitwise_and(c0, c1)", 0x6A5B1L, 0x00000L, 0x00000L},
+    });
+
+    // bitwise OR
+    testFunctions(new Object[][]{
+      {"bitwise_or(c0, c1)", 0x0147D, 0x17159, 0x1757D},
+      {"bitwise_or(c0, c1)", 0xFFFFFFCC, 0x00000297, 0xFFFFFFDF},
+      {"bitwise_or(c0, c1)", 0x000, 0x285, 0x285},
+      {"bitwise_or(c0, c1)", 0x563672F83L, 0x0D9FCF85BL, 0x5FBFFFFDBL},
+      {"bitwise_or(c0, c1)", 0xFFFFFFFFFFDA8F6AL, 0xFFFFFFFFFFFF791CL, 0xFFFFFFFFFFFFFF7EL},
+      {"bitwise_or(c0, c1)", 0x6A5B1L, 0x00000L, 0x6A5B1L},
+    });
+
+    // bitwise NOT
+    testFunctions(new Object[][]{
+      {"bitwise_not(c0)", 0x00017159, 0xFFFE8EA6},
+      {"bitwise_not(c0)", 0xFFFFF226, 0x00000DD9},
+      {"bitwise_not(c0)", 0x000000008BCAE9B4L, 0xFFFFFFFF7435164BL},
+      {"bitwise_not(c0)", 0xFFFFFF966C8D7997L, 0x0000006993728668L},
+      {"bitwise_not(c0)", 0x0000000000000000L, 0xFFFFFFFFFFFFFFFFL},
+    });
+  }
+
+  @Test
+  public void testRound() throws Exception {
+    // round for integers / longs
+    testFunctions(new Object[][] {
+      {"round(c0)", 21134, 21134},
+      {"round(c0)", -132422, -132422},
+      {"round(c0)", 3453562312L, 3453562312L},
+      {"round(c0)", -23453462343L, -23453462343L},
+      {"round(c0, c1)", 7589, -1, 7590},
+      {"round(c0, c1)", 8532, -2, 8500},
+      {"round(c0, c1)", -8579, -1, -8580},
+      {"round(c0, c1)", -8612, -2, -8600},
+      {"round(c0, c1)", -3874, -6, 0},
+      {"round(c0, c1)", 758, 2, 758},
+      {"round(c0, c1)", 3453562312L, -2, 3453562300L},
+      {"round(c0, c1)", 3453562343L, -5, 3453600000L},
+      {"round(c0, c1)", -345353425343L, 12, -345353425343L},
+      {"round(c0, c1)", -23453462343L, -4, -23453460000L},
+      {"round(c0, c1)", -23453462343L, -5, -23453500000L},
+      {"round(c0, c1)", 345353425343L, -12, 0L}
+    });
+
+    // round for floats / doubles
+    testFunctions(new Object[][] {
+      {"round(c0)", 1234.245f, 1234f},
+      {"round(c0)", -11.7892f, -12f},
+      {"round(c0)", 1.4999999f, 1f},
+      {"round(c0)", 1234.245d, 1234d},
+      {"round(c0)", -11.7892d, -12d},
+      {"round(c0)", 1.4999999d, 1d},
+      {"round(c0, c1)", 1234.789f, 2, 1234.79f},
+      {"round(c0, c1)", 1234.12345f, -3, 1000f},
+      {"round(c0, c1)", -1234.4567f, 3, -1234.457f},
+      {"round(c0, c1)", -1234.4567f, -3, -1000f},
+      {"round(c0, c1)", 1234.4567f, 0, 1234f},
+      {"round(c0, c1)", 1.5499999523162842f, 1, 1.5f},
+      {"round(c0, c1)", (float)(1.55), 1, 1.5f},
+      {"round(c0, c1)", (float)(9.134123), 2, 9.13f},
+      {"round(c0, c1)", (float)(-1.923), 1, -1.9f},
+      {"round(c0, c1)", 1234.789d, 2, 1234.79d},
+      {"round(c0, c1)", 1234.12345d, -3, 1000d},
+      {"round(c0, c1)", -1234.4567d, 3, -1234.457d},
+      {"round(c0, c1)", -1234.4567d, -3, -1000d},
+      {"round(c0, c1)", 1234.4567d, 0, 1234d},
+    });
+  }
+
+  @Test
+  public void testConcat() throws Exception {
+    testFunctions(new Object[][]{
+      { "concat(c0, c1)", "abc", "ABC", "abcABC"},
+      { "concat(c0, c1)", "abc", NULL_VARCHAR, "abc"},
+      { "concat(c0, c1)", "", "ABC", "ABC"},
+      { "concat(c0, c1)", NULL_VARCHAR, NULL_VARCHAR, ""},
+      { "concat(c0, c1, c2)", "abcd", "a", "bcd", "abcdabcd"},
+      { "concat(c0, c1, c2)", NULL_VARCHAR, "pq", "ard", "pqard"},
+      { "concat(c0, c1, c2)", "abcd", NULL_VARCHAR, "-a", "abcd-a"},
+      { "concat(c0, c1, c2, c3)", "pqrs", "", "[n]abc", "y", "pqrs[n]abcy"},
+      { "concat(c0, c1, c2, c3)", "", "pq", "ard", NULL_VARCHAR, "pqard"},
+      { "concat(c0, c1, c2, c3, c4)", "", "npq", "ARD", "", "abc", "npqARDabc"},
+      { "concat(c0, c1, c2, c3, c4)", "pqrs", NULL_VARCHAR, "nabc", "=y123",
+        NULL_VARCHAR, "pqrsnabc=y123"},
+      { "concat(c0, c1, c2, c3, c4, c5)", ":a", "npq", "ard", "", "abcn",
+        "sdfgs", ":anpqardabcnsdfgs"},
+      { "concat(c0, c1, c2, c3, c4, c5)", "PQRS", NULL_VARCHAR, "abc", "y",
+        NULL_VARCHAR, "bcd", "PQRSabcybcd"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6)", ":o", "npq", "ard", "==", "abcn",
+        "sdfgs", "", ":onpqard==abcnsdfgs"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6)", "pqrs", NULL_VARCHAR, "abc-n",
+        "YABC", NULL_VARCHAR, "asdf", "jkl", "pqrsabc-nYABCasdfjkl"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6, c7)", "", "##npq", "ard",
+        "", "abcn", "sdf*gs", "", "", "##npqardabcnsdf*gs"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6, c7)", NULL_VARCHAR, "pqrs",
+        "abc", "y", NULL_VARCHAR, "asdf", "jkl", "$$", "pqrsabcyasdfjkl$$"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6, c7, c8)", "abcd", "", "pq", "ard",
+        "", "abcn", "sdfgs", "", "qwert|n", "abcdpqardabcnsdfgsqwert|n"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6, c7, c8)", NULL_VARCHAR, "abcd", "npq",
+        "sdfgs", "", "uwu", "wfw", "ABC", NULL_VARCHAR, "abcdnpqsdfgsuwuwfwABC"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6, c7, c8, c9)", "abcd", "", "pq", "ard", "",
+        "ABCN", "sdfgs", "", "qwert|n", "a", "abcdpqardABCNsdfgsqwert|na"},
+      { "concat(c0, c1, c2, c3, c4, c5, c6, c7, c8, c9)", NULL_VARCHAR, "abcd", "npq",
+        "sdfgs", "", "uwu", "wfw", "ABC", NULL_VARCHAR, "1234", "abcdnpqsdfgsuwuwfwABC1234"},
+    });
+  }
+
+  @Test
+  public void testSplitPart() throws Exception {
+    testFunctions(new Object[][]{
+      { "split_part(c0, c1, c2)", "abc~@~def~@~ghi", "~@~", 1, "abc"},
+      { "split_part(c0, c1, c2)", "abc~@~def~@~ghi", "~@~", 2, "def"},
+      { "split_part(c0, c1, c2)", "A,B,C", ",", 3, "C"},
+      { "split_part(c0, c1, c2)", "A,B,C", ",", 4, ""},
+      { "split_part(c0, c1, c2)", "123|456|789", "|", 1, "123"},
+      { "split_part(c0, c1, c2)", "abc\\u1111dremio\\u1111ghi", "\\u1111", 2, "dremio"},
+      { "split_part(c0, c1, c2)", "a,b,c", " ", 1, "a,b,c"},
+      { "split_part(c0, c1, c2)", "a,b,c", " ", 2, ""},
+    });
+  }
+
+  @Test(expected = RuntimeException.class)
+  public void testSplitPartZeroIndexError() throws Exception {
+    try {
+      testFunctions(new Object[][] {
+        { "split_part(c0, c1, c2)", "A,B,C", ",", 0, ""},
+      });
+    } catch (RuntimeException re) {
+      Assert.assertTrue(re.getCause().getCause().getMessage().contains("Index in split_part must be positive, value provided was 0"));
+      throw re;
+    }
+  }
+
+  @Test
+  public void testBinaryString() throws Exception {
+    testFunctions(new Object[][]{
+      {"convert_from(binary_string(c0), 'UTF8')", "\\x41\\x42\\x43", "ABC"},
+      {"convert_from(binary_string(c0), 'UTF8')", "\\x41\\x20\\x42\\x20\\x43", "A B C"},
+      {"convert_from(binary_string(c0), 'UTF8')", "\\x41", "A"},
+      {"convert_from(binary_string(c0), 'UTF8')", "TestString", "TestString"},
+      {"convert_from(binary_string(c0), 'UTF8')", "T", "T"},
+      {"convert_from(binary_string(c0), 'UTF8')", "\\x4f\\x4D", "OM"},
+    });
+  }
+
+  @Test
+  public void testConcatOperator() throws Exception {
+    testFunctions(new Object[][]{
+      { "concatOperator(c0, c1)", "abcd", "ABCD", "abcdABCD"},
+      { "concatOperator(c0, c1)", "", "ABCD", "ABCD"},
+      { "concatOperator(c0, c1)", NULL_VARCHAR, "abc", NULL_VARCHAR},
+      { "concatOperator(c0, c1)", "", "", ""},
+    });
+  }
 
   @Test
   public void testFlippedCodeGenerator() throws Exception {
@@ -801,6 +976,16 @@ public class TestNativeFunctions extends BaseTestFunction {
     });
   }
 
+  @Test
+  public void testCastBigIntToTimestamp() throws Exception {
+    testFunctions(new Object[][]{
+      {"castTIMESTAMP(c0)", 15020L, ts("1970-01-01T00:00:15.020")},
+      {"castTIMESTAMP(c0)", 5*86400000L, ts("1970-01-06T00:00:00")},
+      {"castTIMESTAMP(c0)", -20800L, ts("1969-12-31T23:59:39.200")},
+      {"castTIMESTAMP(c0)", -12*86400000L, ts("1969-12-20T00:00:00")}
+    });
+  }
+
   @Test(expected = RuntimeException.class)
   public void testTSToVarcharNegativeLenError() throws Exception {
     try {
@@ -832,4 +1017,46 @@ public class TestNativeFunctions extends BaseTestFunction {
     });
   }
 
+  @Test
+  public void testDateTruncFunctions() {
+    testFunctions(new Object[][]{
+      {"extractday(date_trunc_Month(c0))", date("2020-11-12"), 1L},
+      {"extractmonth(date_trunc_Month(c0))", date("2020-11-12"), 11L},
+      {"extractyear(date_trunc_Month(c0))", date("2020-11-12"), 2020L},
+
+      {"extractday(date_trunc_Year(c0))", date("2020-11-12"), 1L},
+      {"extractmonth(date_trunc_Year(c0))", date("2020-11-12"), 1L},
+      {"extractyear(date_trunc_Year(c0))", date("2020-11-12"), 2020L},
+    });
+  }
+
+  @Test
+  public void testCastTimestampToDate() throws Exception {
+    testFunctions(new Object[][]{
+      {"cast(castDATE(c0) as TIMESTAMP)", ts("1970-01-12T10:20:33"), ts("1970-01-12T00:00:00")},
+      {"cast(to_date(c0) as TIMESTAMP)", ts("1970-01-12T10:20:33"), ts("1970-01-12T00:00:00")},
+      {"cast(cast(c0 as DATE) as TIMESTAMP)", ts("1970-01-12T10:20:33"), ts("1970-01-12T00:00:00")},
+      {"extractYear(to_date(c0))", ts("1970-01-12T10:20:33"), 1970L},
+    });
+  }
+
+  @Test
+  public void testCastIntFromString() throws Exception {
+    testFunctions(new Object[][]{
+      {"castINT(c0)", "56", 56},
+      {"cast(c0 as INT)", "-2", -2},
+      {"castBIGINT(c0)", "56", 56l},
+      {"cast(c0 as BIGINT)", "-2", -2l},
+    });
+  }
+
+  @Test
+  public void testCastFloatFromString() throws Exception {
+    testFunctions(new Object[][]{
+      {"castFLOAT4(c0)", "3.4", 3.4f},
+      {"castFLOAT4(c0)", "-2.1", -2.1f},
+      {"castFLOAT8(c0)", "3.4", 3.4},
+      {"castFLOAT8(c0)", "-2.1", -2.1},
+    });
+  }
 }

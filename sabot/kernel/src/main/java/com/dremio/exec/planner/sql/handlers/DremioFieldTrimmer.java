@@ -32,6 +32,7 @@ import org.apache.calcite.rel.RelCollation;
 import org.apache.calcite.rel.RelCollations;
 import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.core.Aggregate;
 import org.apache.calcite.rel.core.Correlate;
 import org.apache.calcite.rel.core.CorrelationId;
 import org.apache.calcite.rel.core.Join;
@@ -71,11 +72,14 @@ import org.apache.calcite.util.mapping.MappingType;
 import org.apache.calcite.util.mapping.Mappings;
 
 import com.dremio.common.expression.SchemaPath;
+import com.dremio.exec.calcite.logical.SampleCrel;
 import com.dremio.exec.calcite.logical.ScanCrel;
 import com.dremio.exec.planner.logical.DremioRelFactories;
 import com.dremio.exec.planner.logical.FlattenVisitors;
 import com.dremio.exec.planner.logical.JoinRel;
 import com.dremio.exec.planner.logical.LimitRel;
+import com.dremio.exec.store.dfs.FilesystemScanDrel;
+import com.dremio.service.Pointer;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
@@ -136,6 +140,22 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
   }
 
   /**
+   * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link Aggregate}.
+   */
+  @Override
+  public TrimResult trimFields(
+    Aggregate aggregate,
+    ImmutableBitSet fieldsUsed,
+    Set<RelDataTypeField> extraFields) {
+    int fieldCount = aggregate.getRowType().getFieldCount();
+    if (fieldCount == 0) {
+      // If the input has no fields, we cannot trim anything.
+      return new TrimResult(aggregate, Mappings.createIdentity(fieldCount));
+    }
+    return super.trimFields(aggregate, fieldsUsed, extraFields);
+  }
+
+  /**
    * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link com.dremio.exec.planner.logical.CorrelateRel}.
    */
   public TrimResult trimFields(
@@ -154,6 +174,11 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
     inputBitSet.addAll(fieldsUsed);
     int changeCount = 0;
     inputBitSet.addAll(correlate.getRequiredColumns());
+    int leftFieldCount = correlate.getLeft().getRowType().getFieldCount();
+    int rightfieldCount = correlate.getRight().getRowType().getFieldCount();
+    for (int i = leftFieldCount ; i < leftFieldCount + rightfieldCount ; i++) {
+      inputBitSet.set(i);
+    }
 
     final ImmutableBitSet fieldsUsedPlus = inputBitSet.build();
 
@@ -247,6 +272,17 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
   }
 
   /**
+   * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link SampleCrel}.
+   */
+  public TrimResult trimFields(
+    SampleCrel sampleCrel,
+    ImmutableBitSet fieldsUsed,
+    Set<RelDataTypeField> extraFields) {
+    TrimResult result = dispatchTrimFields(sampleCrel.getInput(), fieldsUsed, extraFields);
+    return result(SampleCrel.create(result.left), result.right);
+  }
+
+  /**
    * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link ScanCrel}.
    */
   @SuppressWarnings("unused")
@@ -283,6 +319,70 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
     return result(newCrel, m);
   }
 
+  /**
+   * Variant of {@link #trimFields(RelNode, ImmutableBitSet, Set)} for {@link FilesystemScanDrel}.
+   */
+  @SuppressWarnings("unused")
+  public TrimResult trimFields(
+    FilesystemScanDrel drel,
+    ImmutableBitSet fieldsUsed,
+    Set<RelDataTypeField> extraFields) {
+
+    // if we've already pushed down projection of nested columns, we don't want to trim anymore
+    if (drel.getProjectedColumns().stream().anyMatch(c -> !c.isSimplePath())) {
+      return result(drel, Mappings.createIdentity(drel.getRowType().getFieldCount()));
+    }
+
+    ImmutableBitSet.Builder fieldBuilder = fieldsUsed.rebuild();
+
+    Pointer<Boolean> failed = new Pointer<>(false);
+    if (drel.getFilter() != null) {
+      drel.getFilter().getConditions().forEach(c -> {
+        SchemaPath path = c.getPath();
+        String pathString = path.getAsUnescapedPath();
+        RelDataTypeField field = drel.getRowType().getField(pathString, false, false);
+        if (field != null) {
+          fieldBuilder.set(field.getIndex());
+        } else {
+          failed.value = true;
+        }
+      });
+    }
+
+    if (failed.value) {
+      return result(drel, Mappings.createIdentity(drel.getRowType().getFieldCount()));
+    }
+
+    fieldsUsed = fieldBuilder.build();
+
+
+    if(fieldsUsed.cardinality() == drel.getRowType().getFieldCount()) {
+      return result(drel, Mappings.createIdentity(drel.getRowType().getFieldCount()));
+    }
+
+    if(fieldsUsed.cardinality() == 0) {
+      // do something similar to dummy project but avoid using a scan field. This ensures the scan
+      // does a skipAll operation rather than projectin a useless column.
+      final RelOptCluster cluster = drel.getCluster();
+      final Mapping mapping = Mappings.create(MappingType.INVERSE_SURJECTION, drel.getRowType().getFieldCount(), 1);
+      final RexLiteral expr = cluster.getRexBuilder().makeExactLiteral(BigDecimal.ZERO);
+      builder.push(drel);
+      builder.project(ImmutableList.<RexNode>of(expr), ImmutableList.of("DUMMY"));
+      return result(builder.build(), mapping);
+    }
+
+    final List<SchemaPath> paths = new ArrayList<>();
+    final Mapping m = Mappings.create(MappingType.PARTIAL_FUNCTION, drel.getRowType().getFieldCount(), fieldsUsed.cardinality());
+    int index = 0;
+    for(int i : fieldsUsed) {
+      paths.add(SchemaPath.getSimplePath(drel.getRowType().getFieldList().get(i).getName()));
+      m.set(i, index);
+      index++;
+    }
+
+    FilesystemScanDrel newDrel = drel.cloneWithProject(paths, false);
+    return result(newDrel, m);
+  }
 
   // Overridden until CALCITE-2260 is fixed.
   @Override
@@ -291,7 +391,7 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
       ImmutableBitSet fieldsUsed,
       Set<RelDataTypeField> extraFields) {
     if(!setOp.all) {
-      return result(setOp, Mappings.createIdentity(setOp.getRowType().getFieldCount()));
+      return super.trimFields(setOp, ImmutableBitSet.range(setOp.getRowType().getFieldCount()), extraFields);
     }
     return super.trimFields(setOp, fieldsUsed, extraFields);
   }
@@ -572,6 +672,9 @@ public class DremioFieldTrimmer extends RelFieldTrimmer {
     JoinRel join,
     ImmutableBitSet fieldsUsed,
     Set<RelDataTypeField> extraFields) {
+    if (fieldsUsed.cardinality() == 0) {
+      fieldsUsed = fieldsUsed.set(0);
+    }
     TrimResult result = super.trimFields(join, fieldsUsed, extraFields);
     Join rel = (Join) result.left;
     Mapping mapping = result.right;

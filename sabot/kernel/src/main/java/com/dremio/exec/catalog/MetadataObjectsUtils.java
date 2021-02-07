@@ -42,6 +42,7 @@ import com.dremio.service.namespace.dataset.proto.PhysicalDataset;
 import com.dremio.service.namespace.dataset.proto.ReadDefinition;
 import com.dremio.service.namespace.dataset.proto.ScanStats;
 import com.dremio.service.namespace.dataset.proto.ScanStatsType;
+import com.dremio.service.namespace.file.proto.FileConfig;
 import com.dremio.service.namespace.proto.EntityId;
 
 import io.protostuff.ByteString;
@@ -80,17 +81,18 @@ public final class MetadataObjectsUtils {
   /**
    * Overrides attributes of the given serializable dataset config with the corresponding values from the given
    * extended dataset metadata. Optionally sets the read signature if one is provided.
-   *
    * @param datasetConfig dataset config
    * @param newExtended   extended metadata
    * @param newSignature  optional read signature
+   * @param newRecordCount   the number of records for sources that do not support record counts in stats.
+   * @param maxLeafFields the number of leaf fields permitted
    */
   public static void overrideExtended(
-      DatasetConfig datasetConfig,
-      DatasetMetadata newExtended,
-      Optional<ByteString> newSignature,
-      int maxLeafFields
-  ) {
+    DatasetConfig datasetConfig,
+    DatasetMetadata newExtended,
+    Optional<ByteString> newSignature,
+    long newRecordCount,
+    int maxLeafFields) {
     // 1. preserve shallow and misc attributes as is
     // no-op
 
@@ -107,10 +109,11 @@ public final class MetadataObjectsUtils {
     readDefinition.setSortColumnsList(newExtended.getSortColumns()); // TODO: not required from connectors
     readDefinition.setExtendedProperty(toProtostuff(newExtended.getExtraInfo()));
     final DatasetStats datasetStats = newExtended.getDatasetStats();
+    final long datasetRecordCount = datasetStats.getRecordCount();
     readDefinition.setScanStats(new ScanStats()
         .setScanFactor(datasetStats.getScanFactor())
         .setType(datasetStats.isExactRecordCount() ? ScanStatsType.EXACT_ROW_COUNT : ScanStatsType.NO_EXACT_ROW_COUNT)
-        .setRecordCount(datasetStats.getRecordCount())
+        .setRecordCount(datasetRecordCount >= 0 ? datasetRecordCount : newRecordCount)
     );
 
     if (newExtended instanceof FileConfigMetadata) {
@@ -118,7 +121,11 @@ public final class MetadataObjectsUtils {
       if (pds == null) {
         pds = new PhysicalDataset();
       }
-      pds.setFormatSettings(((FileConfigMetadata) newExtended).getFileConfig());
+      FileConfig fileConfig = ((FileConfigMetadata) newExtended).getFileConfig();
+      if (pds.getFormatSettings() != null) {
+        fileConfig.setFullPathList(pds.getFormatSettings().getFullPathList());
+      }
+      pds.setFormatSettings(fileConfig);
       datasetConfig.setPhysicalDataset(pds);
     }
 

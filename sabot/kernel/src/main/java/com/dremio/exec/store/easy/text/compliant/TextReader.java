@@ -17,11 +17,12 @@ package com.dremio.exec.store.easy.text.compliant;
 
 import java.io.IOException;
 
+import org.apache.arrow.memory.ArrowBuf;
+
 import com.dremio.common.exceptions.UserException;
 import com.univocity.parsers.common.TextParsingException;
 import com.univocity.parsers.csv.CsvParserSettings;
 
-import io.netty.buffer.ArrowBuf;
 import io.netty.buffer.NettyArrowBuf;
 
 /*******************************************************************************
@@ -56,6 +57,16 @@ final class TextReader implements AutoCloseable {
   private final boolean ignoreLeadingWhitespace;
   private final boolean parseUnescapedQuotes;
 
+  /**
+   * Input line delimiter differs with normalized line delimiter in two cases:
+   * - It is multi-byte
+   * - It is single byte but not same as normalized one
+   * Is there a third case? What if it is multi-byte but the first byte is same as
+   * normalized one?
+   * This flag tells whether input line delimiter is same as normalized line delimiter.
+   */
+  private final boolean isNormalLineDelimiter;
+
   /** Key Characters **/
   private final byte comment;
   private final byte delimiter;
@@ -89,6 +100,10 @@ final class TextReader implements AutoCloseable {
 
     this.input = input;
     this.output = output;
+
+    final byte[] newLineDelimiter = settings.getNewLineDelimiter();
+    isNormalLineDelimiter = ((newLineDelimiter.length == 1) && (newLineDelimiter[0] == settings.getNormalizedNewLine())) ?
+      true : false;
   }
 
   public TextOutput getOutput(){
@@ -260,7 +275,7 @@ final class TextReader implements AutoCloseable {
     // For example, in tab-separated files (TSV files), '\t' is used as delimiter and should not be ignored
     // Content after whitespaces may be parsed if 'parseUnescapedQuotes' is enabled.
     if (ch != newLine && ch <= ' ' && ch != delimiter) {
-      final NettyArrowBuf workBuf = this.workBuf.asNettyBuffer();
+      final NettyArrowBuf workBuf = NettyArrowBuf.unwrapBuffer(this.workBuf);
       workBuf.resetWriterIndex();
       do {
         // saves whitespaces after value
@@ -357,6 +372,9 @@ final class TextReader implements AutoCloseable {
         ch = input.nextChar();
         if (ch == comment) {
           input.skipLines(1);
+          continue;
+        }
+        if ((ch == newLine) && !isNormalLineDelimiter) {
           continue;
         }
         break;

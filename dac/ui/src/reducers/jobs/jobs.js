@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import Immutable  from 'immutable';
+import Immutable from 'immutable';
 
 import * as ActionTypes from 'actions/jobs/jobs';
 import jobsMapper from 'utils/mappers/jobsMapper';
@@ -27,7 +27,9 @@ const initialState = Immutable.fromJS({
   filters: {},
   orderedColumn: {'columnName': null, 'order': 'desc'},
   isInProgress: false,
-  isFailed: false
+  isFailed: false,
+  clusterType: 'NA',
+  isSupport: false
 });
 
 export default function jobs(state = initialState, action) {
@@ -54,6 +56,7 @@ export default function jobs(state = initialState, action) {
   case ActionTypes.JOBS_DATA_REQUEST:
   case ActionTypes.SORT_JOBS_REQUEST:
   case ActionTypes.FILTER_JOBS_REQUEST:
+  case ActionTypes.REFLECTION_JOBS_REQUEST:
     return StateUtils.request(state, ['jobs']);
 
   case ActionTypes.LOAD_NEXT_JOBS_REQUEST:
@@ -69,6 +72,7 @@ export default function jobs(state = initialState, action) {
   case ActionTypes.JOBS_DATA_FAILURE:
   case ActionTypes.SORT_JOBS_FAILURE:
   case ActionTypes.FILTER_JOBS_FAILURE:
+  case ActionTypes.REFLECTION_JOB_DETAILS_FAILURE:
     return StateUtils.failed(state, ['jobs']).set('isFailed', true);
 
   case ActionTypes.JOBS_DATA_SUCCESS :
@@ -81,6 +85,7 @@ export default function jobs(state = initialState, action) {
       .set('orderedColumn', action.meta.config);
 
   case ActionTypes.FILTER_JOBS_SUCCESS:
+  case ActionTypes.REFLECTION_JOBS_SUCCESS:
     return StateUtils.success(state, ['jobs'], action.payload, jobsMapper.mapJobs).set('next', action.payload.next);
 
   case ActionTypes.JOBS_DATASET_DATA_SUCCESS :
@@ -89,6 +94,8 @@ export default function jobs(state = initialState, action) {
   case ActionTypes.ITEMS_FOR_FILTER_JOBS_SUCCESS :
     return state.setIn(['dataForFilter', action.meta.tag], action.payload.items);
 
+  case ActionTypes.SET_CLUSTER_TYPE:
+    return state.set('clusterType', action.payload.clusterType).set('isSupport', action.payload.isSupport);
   default:
     return state;
   }

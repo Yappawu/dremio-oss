@@ -19,6 +19,7 @@ import java.math.BigDecimal;
 
 import javax.inject.Inject;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.holders.BigIntHolder;
 import org.apache.arrow.vector.holders.BitHolder;
 import org.apache.arrow.vector.holders.DecimalHolder;
@@ -44,8 +45,6 @@ import com.dremio.exec.expr.fn.FunctionErrorContext;
 import com.dremio.exec.expr.fn.FunctionGenerationHelper;
 import com.dremio.exec.expr.fn.OutputDerivation;
 
-import io.netty.buffer.ArrowBuf;
-
 
 public class DecimalFunctions {
 
@@ -70,8 +69,8 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      in.start = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, in.start, in.scale);
+      in.start = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       String istr = bd.toString();
       out.start = 0;
       out.end = Math.min((int)len.value, istr.length()); // truncate if target type has length smaller than that of input's string
@@ -96,8 +95,8 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      in.start = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, in.start, in.scale);
+      in.start = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       out.value = bd.doubleValue();
     }
   }
@@ -141,7 +140,7 @@ public class DecimalFunctions {
       }
 
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
             .build();
@@ -192,7 +191,7 @@ public class DecimalFunctions {
         } else {
           out.isSet = 1;
           try {
-            org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(convertedValue, buffer, 0);
+            org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(convertedValue, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
           } catch (RuntimeException e) {
             throw errorContext.error(e)
               .build();
@@ -232,8 +231,8 @@ public class DecimalFunctions {
     public void eval() {
       out.isSet = in.isSet;
       if (in.isSet == 1) {
-        int index = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-        java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, index, in.scale);
+        long index = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+        java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         java.math.BigDecimal result = input.setScale((int) scale.value, java.math.RoundingMode.HALF_UP);
         boolean overflow = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result,
           (int) precision.value);
@@ -242,7 +241,7 @@ public class DecimalFunctions {
         } else {
           out.isSet = 1;
           try {
-            org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+            org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
           } catch (RuntimeException e) {
             throw errorContext.error(e)
               .build();
@@ -279,8 +278,8 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, index, in.scale);
+      long index = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.roundWithPositiveScale(input,
               (int) scale.value, java.math.RoundingMode.HALF_UP);
@@ -290,7 +289,7 @@ public class DecimalFunctions {
       }
 
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
                 .build();
@@ -327,7 +326,7 @@ public class DecimalFunctions {
     public void eval() {
       java.math.BigDecimal bd = java.math.BigDecimal.valueOf(in.value).setScale((int) scale.value, java.math.RoundingMode.HALF_UP);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
             .build();
@@ -364,7 +363,7 @@ public class DecimalFunctions {
     public void eval() {
       java.math.BigDecimal bd = java.math.BigDecimal.valueOf(in.value).setScale((int) scale.value, java.math.RoundingMode.HALF_UP);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
             .build();
@@ -402,7 +401,7 @@ public class DecimalFunctions {
       out.isSet = 1;
       java.math.BigDecimal bd = java.math.BigDecimal.valueOf(in.value).setScale((int) scale.value, java.math.RoundingMode.HALF_UP);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
             .build();
@@ -439,7 +438,7 @@ public class DecimalFunctions {
     public void eval() {
       java.math.BigDecimal bd = java.math.BigDecimal.valueOf(in.value).setScale((int) scale.value, java.math.RoundingMode.HALF_UP);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(bd, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
             .build();
@@ -468,8 +467,8 @@ public class DecimalFunctions {
     }
     public void add() {
       if (in.isSet != 0) {
-        in.start = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, in.start, in.scale);
+        in.start = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         sum.value += bd.doubleValue();
         nonNullCount.value++;
       }
@@ -503,8 +502,8 @@ public class DecimalFunctions {
     }
     public void add() {
       if (in.isSet == 1) {
-        in.start = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, in.start, in.scale);
+        in.start = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), in.scale,org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         sum.value += bd.doubleValue();
       }
     }
@@ -536,8 +535,8 @@ public class DecimalFunctions {
     public void add() {
       if (in.isSet != 0) {
         nonNullCount.value = 1;
-        in.start = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, in.start, in.scale);
+        in.start = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         double val = bd.doubleValue();
         if (val < minVal.value) {
           minVal.value = val;
@@ -578,8 +577,8 @@ public class DecimalFunctions {
     public void add() {
       if (in.isSet != 0) {
         nonNullCount.value = 1;
-        in.start = (in.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, in.start, in.scale);
+        in.start = (in.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+        java.math.BigDecimal bd = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), in.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         double val = bd.doubleValue();
         if (val > maxVal.value) {
           maxVal.value = val;
@@ -617,7 +616,7 @@ public class DecimalFunctions {
       buffer = buffer.reallocIfNeeded(16);
       sum.buffer = buffer;
       java.math.BigDecimal zero = new java.math.BigDecimal(java.math.BigInteger.ZERO, 0);
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       sum.start = 0;
       nonNullCount = new NullableBigIntHolder();
       nonNullCount.isSet = 1;
@@ -626,8 +625,8 @@ public class DecimalFunctions {
 
     public void add() {
       if (in.isSet == 1) {
-        com.dremio.exec.util.DecimalUtils.addSignedDecimalInLittleEndianBytes(sum.buffer, sum.start, in.buffer, in
-          .start, sum.buffer, sum.start);
+        com.dremio.exec.util.DecimalUtils.addSignedDecimalInLittleEndianBytes(sum.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(sum.start), in.buffer,
+          org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), sum.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(sum.start));
         nonNullCount.value++;
       }
     }
@@ -646,7 +645,7 @@ public class DecimalFunctions {
     public void reset() {
       nonNullCount.value = 0;
       java.math.BigDecimal zero = new java.math.BigDecimal(java.math.BigInteger.ZERO, 0);
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
     }
   }
 
@@ -670,13 +669,13 @@ public class DecimalFunctions {
       sum.buffer = buffer;
       sum.start = 0;
       java.math.BigDecimal zero = new java.math.BigDecimal(java.math.BigInteger.ZERO, 0);
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
     }
 
     public void add() {
       if (in.isSet == 1) {
-        com.dremio.exec.util.DecimalUtils.addSignedDecimalInLittleEndianBytes(sum.buffer, sum.start, in.buffer, in
-          .start, sum.buffer, sum.start);
+        com.dremio.exec.util.DecimalUtils.addSignedDecimalInLittleEndianBytes(sum.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(sum.start), in.buffer,
+          org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), sum.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(sum.start));
       }
     }
 
@@ -688,7 +687,7 @@ public class DecimalFunctions {
 
     public void reset() {
       java.math.BigDecimal zero = new java.math.BigDecimal(java.math.BigInteger.ZERO, 0);
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(zero, sum.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
     }
   }
 
@@ -710,7 +709,7 @@ public class DecimalFunctions {
       minVal.buffer = buffer;
       nonNullCount = new NullableBigIntHolder();
       nonNullCount.isSet = 1;
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MAX_DECIMAL, minVal.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MAX_DECIMAL, minVal.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       nonNullCount.value = 0;
     }
 
@@ -718,9 +717,9 @@ public class DecimalFunctions {
       if (in.isSet != 0) {
         nonNullCount.value = 1;
         int compare = com.dremio.exec.util.DecimalUtils
-          .compareSignedDecimalInLittleEndianBytes(in.buffer, in.start, minVal.buffer, 0);
+          .compareSignedDecimalInLittleEndianBytes(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), minVal.buffer, 0);
         if (compare < 0) {
-          in.buffer.getBytes(in.start, minVal.buffer, 0 , org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH);
+          in.buffer.getBytes(in.start, minVal.buffer, 0 , org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         }
       }
     }
@@ -736,7 +735,7 @@ public class DecimalFunctions {
     }
 
     public void reset() {
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MAX_DECIMAL, minVal.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MAX_DECIMAL, minVal.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       nonNullCount.value = 0;
     }
 
@@ -758,7 +757,7 @@ public class DecimalFunctions {
       maxVal.start = 0;
       buffer = buffer.reallocIfNeeded(16);
       maxVal.buffer = buffer;
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MIN_DECIMAL, maxVal.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MIN_DECIMAL, maxVal.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       nonNullCount = new NullableBigIntHolder();
       nonNullCount.isSet = 1;
       nonNullCount.value = 0;
@@ -767,9 +766,9 @@ public class DecimalFunctions {
       if (in.isSet != 0) {
         nonNullCount.value = 1;
         int compare = com.dremio.exec.util.DecimalUtils
-          .compareSignedDecimalInLittleEndianBytes(in.buffer, in.start, maxVal.buffer, 0);
+          .compareSignedDecimalInLittleEndianBytes(in.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(in.start), maxVal.buffer, 0);
         if (compare > 0) {
-          in.buffer.getBytes(in.start, maxVal.buffer, 0 , org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH);
+          in.buffer.getBytes(in.start, maxVal.buffer, 0 , org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
         }
       }
     }
@@ -784,7 +783,7 @@ public class DecimalFunctions {
       }
     }
     public void reset() {
-      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MIN_DECIMAL, maxVal.buffer, 0);
+      org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(com.dremio.exec.util.DecimalUtils.MIN_DECIMAL, maxVal.buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       nonNullCount.value = 0;
     }
 
@@ -825,7 +824,7 @@ public class DecimalFunctions {
         }
 
         out.value = com.dremio.exec.util.DecimalUtils.compareSignedDecimalInLittleEndianBytes
-          (left.buffer, left.start, right.buffer, right.start);
+          (left.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(left.start), right.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(right.start));
       } // outside
     }
   }
@@ -865,7 +864,7 @@ public class DecimalFunctions {
         }
 
         out.value = com.dremio.exec.util.DecimalUtils.compareSignedDecimalInLittleEndianBytes
-          (left.buffer, left.start, right.buffer, right.start);
+          (left.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(left.start), right.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(right.start));
 
       } // outside
     }
@@ -919,11 +918,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (in1.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in1.buffer, index, in1.scale);
+      long index = (in1.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in1.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), in1.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (in2.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in2.buffer, index, in2.scale);
+      index = (in2.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(in2.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), in2.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       org.apache.arrow.vector.types.pojo.ArrowType.Decimal resultTypeForOperation = org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.getResultTypeForOperation(org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.OperationType.ADD,
         new org.apache.arrow.vector.types.pojo.ArrowType.Decimal(in1.precision, in1.scale),
@@ -933,7 +932,7 @@ public class DecimalFunctions {
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.addOrSubtract(false, left, right, out.precision, out.scale);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw errorContext.error(e)
           .build();
@@ -964,11 +963,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       org.apache.arrow.vector.types.pojo.ArrowType.Decimal resultTypeForOperation = org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.getResultTypeForOperation(org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.OperationType.SUBTRACT,
         new org.apache.arrow.vector.types.pojo.ArrowType.Decimal(leftHolder.precision, leftHolder.scale),
@@ -978,7 +977,7 @@ public class DecimalFunctions {
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.addOrSubtract(true, left, right, resultHolder.precision, resultHolder.scale);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1008,11 +1007,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       org.apache.arrow.vector.types.pojo.ArrowType.Decimal resultTypeForOperation = org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.getResultTypeForOperation(org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.OperationType.MULTIPLY,
         new org.apache.arrow.vector.types.pojo.ArrowType.Decimal(leftHolder.precision, leftHolder.scale),
@@ -1023,7 +1022,7 @@ public class DecimalFunctions {
       java.math.BigDecimal result = left.multiply(right).setScale(resultHolder.scale, java.math.BigDecimal.ROUND_HALF_UP);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1054,11 +1053,11 @@ public class DecimalFunctions {
     @Override
     public void eval() {
 
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       org.apache.arrow.vector.types.pojo.ArrowType.Decimal resultTypeForOperation = org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.getResultTypeForOperation(org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.OperationType.DIVIDE,
         new org.apache.arrow.vector.types.pojo.ArrowType.Decimal(leftHolder.precision, leftHolder.scale),
@@ -1081,7 +1080,7 @@ public class DecimalFunctions {
       java.math.BigDecimal result = new java.math.BigDecimal(resultUnscaled, resultHolder.scale);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1112,11 +1111,11 @@ public class DecimalFunctions {
     @Override
     public void eval() {
 
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       org.apache.arrow.vector.types.pojo.ArrowType.Decimal resultTypeForOperation = org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.getResultTypeForOperation(org.apache.arrow.gandiva.evaluator.DecimalTypeUtil.OperationType.MOD,
         new org.apache.arrow.vector.types.pojo.ArrowType.Decimal(leftHolder.precision, leftHolder.scale),
@@ -1137,7 +1136,7 @@ public class DecimalFunctions {
       java.math.BigDecimal result = new java.math.BigDecimal(remainder, resultHolder.scale);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1164,11 +1163,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       resultHolder.value = (left.compareTo(right) == 0) ? 1 : 0;
     }
@@ -1193,11 +1192,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       resultHolder.value = (left.compareTo(right) != 0) ? 1 : 0;
     }
@@ -1222,11 +1221,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       resultHolder.value = (left.compareTo(right) < 0) ? 1 : 0;
     }
@@ -1251,11 +1250,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       resultHolder.value = (left.compareTo(right) <= 0) ? 1 : 0;
     }
@@ -1280,11 +1279,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       resultHolder.value = (left.compareTo(right) > 0) ? 1 : 0;
     }
@@ -1309,11 +1308,11 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (leftHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, index, leftHolder.scale);
+      long index = (leftHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal left = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(leftHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), leftHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
-      index = (rightHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, index, rightHolder.scale);
+      index = (rightHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal right = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(rightHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), rightHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       resultHolder.value = (left.compareTo(right) >= 0) ? 1 : 0;
     }
@@ -1341,12 +1340,12 @@ public class DecimalFunctions {
     @Override
     public void eval() {
 
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       java.math.BigDecimal result = input.abs();
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1405,8 +1404,8 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       java.math.BigDecimal result;
       if (scale.value > input.scale()) {
         result = input;
@@ -1415,7 +1414,7 @@ public class DecimalFunctions {
         result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       }
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1454,13 +1453,13 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.round(input, 0, java.math.RoundingMode.HALF_UP);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1500,8 +1499,8 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       java.math.BigDecimal result;
       if (scale.value > input.scale()) {
         result = input;
@@ -1510,7 +1509,7 @@ public class DecimalFunctions {
         result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       }
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1549,13 +1548,13 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.round(input, 0, java.math.RoundingMode.DOWN);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1592,13 +1591,13 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.round(input, 0, java.math.RoundingMode.CEILING);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();
@@ -1635,13 +1634,13 @@ public class DecimalFunctions {
 
     @Override
     public void eval() {
-      int index = (inputHolder.start / (org.apache.arrow.vector.util.DecimalUtility.DECIMAL_BYTE_LENGTH));
-      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, index, inputHolder.scale);
+      long index = (inputHolder.start / (org.apache.arrow.vector.DecimalVector.TYPE_WIDTH));
+      java.math.BigDecimal input = org.apache.arrow.vector.util.DecimalUtility.getBigDecimalFromArrowBuf(inputHolder.buffer, org.apache.arrow.memory.util.LargeMemoryUtil.capAtMaxInt(index), inputHolder.scale, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
 
       java.math.BigDecimal result = com.dremio.exec.expr.fn.impl.DecimalFunctions.round(input, 0, java.math.RoundingMode.FLOOR);
       result = com.dremio.exec.expr.fn.impl.DecimalFunctions.checkOverflow(result);
       try {
-        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0);
+        org.apache.arrow.vector.util.DecimalUtility.writeBigDecimalToArrowBuf(result, buffer, 0, org.apache.arrow.vector.DecimalVector.TYPE_WIDTH);
       } catch (RuntimeException e) {
         throw functionErrorContext.error(e)
           .build();

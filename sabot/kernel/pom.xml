@@ -21,7 +21,7 @@
   <parent>
     <groupId>com.dremio.sabot</groupId>
     <artifactId>dremio-sabot-parent</artifactId>
-    <version>4.3.1-202005202256080999-5dcfb82a</version>
+    <version>13.0.0-202101272034330307-20fb9275</version>
   </parent>
   <artifactId>dremio-sabot-kernel</artifactId>
   <name>Sabot - Kernel</name>
@@ -29,6 +29,18 @@
     <dependency>
       <groupId>com.dremio</groupId>
       <artifactId>dremio-common</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-protobuf</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-stub</artifactId>
     </dependency>
     <dependency>
       <groupId>com.dremio.services</groupId>
@@ -41,6 +53,11 @@
       <artifactId>dremio-connector</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>org.lz4</groupId>
+      <artifactId>lz4-java</artifactId>
+      <version>1.7.1</version>
+    </dependency>    
     <dependency>
       <groupId>com.dremio.client</groupId>
       <artifactId>dremio-client-base</artifactId>
@@ -70,6 +87,14 @@
       <groupId>com.dremio.services</groupId>
       <artifactId>dremio-services-jobresults-common</artifactId>
       <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-netty</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.avro</groupId>
@@ -105,20 +130,14 @@
     </dependency>
 
     <dependency>
-      <groupId>com.dremio.contrib</groupId>
-      <artifactId>dremio-slim-shade</artifactId>
-      <version>${project.version}</version>
-      <exclusions>
-        <exclusion>
-          <artifactId>koloboke-impl-jdk6-7</artifactId>
-          <groupId>com.koloboke</groupId>
-        </exclusion>
-      </exclusions>
+      <groupId>com.dremio.services</groupId>
+      <artifactId>dremio-services-namespace</artifactId>
     </dependency>
-
     <dependency>
       <groupId>com.dremio.services</groupId>
       <artifactId>dremio-services-namespace</artifactId>
+      <classifier>tests</classifier>
+      <scope>test</scope>
     </dependency>
 
     <dependency>
@@ -134,6 +153,12 @@
     <dependency>
       <groupId>com.dremio.services</groupId>
       <artifactId>dremio-services-users</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.koloboke</groupId>
+      <artifactId>koloboke-impl-common-jdk8</artifactId>
+      <version>1.0.0</version>
     </dependency>
 
     <dependency>
@@ -182,26 +207,60 @@
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-api</artifactId>
       <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.github.stephenc.findbugs</groupId>
+          <artifactId>findbugs-annotations</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
       <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.github.stephenc.findbugs</groupId>
+          <artifactId>findbugs-annotations</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-common</artifactId>
       <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.github.stephenc.findbugs</groupId>
+          <artifactId>findbugs-annotations</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-parquet</artifactId>
       <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.parquet</groupId>
+          <artifactId>parquet-avro</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.github.stephenc.findbugs</groupId>
+          <artifactId>findbugs-annotations</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-data</artifactId>
       <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.github.stephenc.findbugs</groupId>
+          <artifactId>findbugs-annotations</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
@@ -452,6 +511,10 @@
           <groupId>org.apache.hadoop</groupId>
           <artifactId>hadoop-common</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>org.apache.arrow</groupId>
+          <artifactId>arrow-memory</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>
@@ -518,10 +581,6 @@
     <dependency>
       <groupId>com.carrotsearch</groupId>
       <artifactId>hppc</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>com.google.protobuf</groupId>
-      <artifactId>protobuf-java</artifactId>
     </dependency>
     <dependency>
       <groupId>org.codehaus.janino</groupId>
@@ -610,6 +669,11 @@
       <artifactId>dremio-services-jobtelemetry-client</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>com.dremio.services</groupId>
+      <artifactId>dremio-services-catalog-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
 
   <build>
@@ -668,7 +732,41 @@
       <plugin>
         <groupId>org.xolstice.maven.plugins</groupId>
         <artifactId>protobuf-maven-plugin</artifactId>
+        <configuration>
+          <clearOutputDirectory>false</clearOutputDirectory>
+        </configuration>
         <executions>
+          <execution>
+            <id>generate-proto</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+            <configuration>
+              <protoSourceRoot>${project.basedir}/src/main/protobuf</protoSourceRoot>
+              <outputDirectory>${project.build.directory}/generated-sources/protobuf</outputDirectory>
+              <excludes>
+                <exclude>**/updateid.proto</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+          <execution>
+            <id>generate-protobuf</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>compile</goal>
+              <goal>compile-custom</goal>
+            </goals>
+            <configuration>
+              <protoSourceRoot>${project.basedir}/src/main/protobuf</protoSourceRoot>
+              <pluginId>grpc-java</pluginId>
+              <pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+              <outputDirectory>${project.build.directory}/generated-sources/protobuf</outputDirectory>
+              <excludes>
+                <exclude>**/updateid.proto</exclude>
+              </excludes>
+            </configuration>
+          </execution>
           <execution>
             <goals>
               <goal>compile</goal>

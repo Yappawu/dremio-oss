@@ -34,6 +34,7 @@ import com.dremio.exec.work.foreman.AttemptManager;
 import com.dremio.exec.work.foreman.ForemanException;
 import com.dremio.exec.work.protector.ForemenWorkManager;
 import com.dremio.resource.basic.BasicResourceConstants;
+import com.dremio.resource.exception.ResourceUnavailableException;
 import com.dremio.sabot.op.aggregate.vectorized.VectorizedHashAggOperator;
 import com.dremio.sabot.rpc.user.AwaitableUserResultsListener;
 
@@ -94,6 +95,16 @@ public class TestMaestroResiliency extends BaseTestQuery {
 
   private long getMaestroTrackerCount() {
     return nodes[0].getBindingProvider().provider(MaestroService.class).get().getActiveQueryCount();
+  }
+
+  @Test
+  public void testFailureInAttemptManagerConstructor() throws Exception {
+    final String controls = Controls.newBuilder()
+      .addException(AttemptManager.class, AttemptManager.INJECTOR_CONSTRUCTOR_ERROR,
+        RuntimeException.class)
+      .build();
+
+    runMultiple(controls, AttemptManager.INJECTOR_CONSTRUCTOR_ERROR);
   }
 
   @Test
@@ -164,6 +175,17 @@ public class TestMaestroResiliency extends BaseTestQuery {
       .build();
 
     runMultiple(controls, ResourceTracker.INJECTOR_RESOURCE_ALLOCATE_ERROR);
+  }
+
+  // Same as testFailureInResourceAllocation, but different exception.
+  @Test
+  public void testUnavailableFailureInResourceAllocation() throws Exception {
+    final String controls = Controls.newBuilder()
+      .addException(ResourceTracker.class, ResourceTracker.INJECTOR_RESOURCE_ALLOCATE_UNAVAILABLE_ERROR,
+        ResourceUnavailableException.class)
+      .build();
+
+    runMultiple(controls, ResourceTracker.INJECTOR_RESOURCE_ALLOCATE_UNAVAILABLE_ERROR);
   }
 
   @Test
@@ -245,30 +267,6 @@ public class TestMaestroResiliency extends BaseTestQuery {
     waitTillQueryCleanup();
   }
 
-  // captures queryId and state.
-  static class QueryIdCapturingListener extends SilentListener {
-    private UserBitShared.QueryId queryId;
-    private UserBitShared.QueryResult.QueryState queryState;
-
-    @Override
-    public void queryIdArrived(UserBitShared.QueryId queryId) {
-      this.queryId = queryId;
-    }
-
-    @Override
-    public void queryCompleted(UserBitShared.QueryResult.QueryState queryState) {
-      this.queryState = queryState;
-    }
-
-    UserBitShared.QueryId getQueryId() {
-      return queryId;
-    }
-
-    UserBitShared.QueryResult.QueryState getQueryState() {
-      return queryState;
-    }
-  }
-
   // pause the test using execution controls, cancel and resume it.
   void pauseCancelAndResume(Class clazz, String descriptor) throws Exception {
     final String controls = Controls.newBuilder()
@@ -286,7 +284,7 @@ public class TestMaestroResiliency extends BaseTestQuery {
       Thread.sleep(10);
     }
     // wait for the pause to be hit
-    Thread.sleep(1000);
+    Thread.sleep(3000);
 
     // cancel query
     client.cancelQuery(queryId);

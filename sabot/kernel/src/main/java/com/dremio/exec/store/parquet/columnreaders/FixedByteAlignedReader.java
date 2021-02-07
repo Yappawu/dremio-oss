@@ -17,6 +17,7 @@ package com.dremio.exec.store.parquet.columnreaders;
 
 import java.math.BigDecimal;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.BaseVariableWidthVector;
 import org.apache.arrow.vector.DateMilliVector;
 import org.apache.arrow.vector.DecimalHelper;
@@ -32,8 +33,6 @@ import org.joda.time.DateTimeConstants;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.exec.store.parquet.ParquetReaderUtility;
-
-import io.netty.buffer.ArrowBuf;
 
 
 class FixedByteAlignedReader<V extends ValueVector> extends ColumnReader<V> {
@@ -219,7 +218,7 @@ class FixedByteAlignedReader<V extends ValueVector> extends ColumnReader<V> {
        */
       BigDecimal intermediate = DecimalHelper.getBigDecimalFromBEArrowBuf(bytebuf, index, schemaElement.getScale());
       /* this will swap bytes as we are writing to the buffer of DecimalVector */
-      DecimalUtility.writeBigDecimalToArrowBuf(intermediate, valueVec.getDataBuffer(), index);
+      DecimalUtility.writeBigDecimalToArrowBuf(intermediate, valueVec.getDataBuffer(), index, DecimalVector.TYPE_WIDTH);
       valueVec.setIndexDefined(index);
     }
   }

@@ -112,7 +112,9 @@ export function createFirstUser(form, meta) {
     form
   };
 
-  const apiCall = new APIV2Call().paths('bootstrap/firstuser');
+  const apiCall = new APIV2Call()
+    .path('bootstrap')
+    .path('firstuser');
 
   return {
     [RSAA]: {
@@ -143,7 +145,8 @@ function deleteUser(user) {
   };
 
   const apiCall = new APIV2Call()
-    .paths(user.getIn(['links', 'self']))
+    .path('user')
+    .path(user.get('userName'))
     .params({version: user.getIn(['userConfig', 'version'])});
 
   return {

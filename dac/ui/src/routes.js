@@ -13,16 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Route, IndexRoute, Redirect, IndexRedirect } from 'react-router';
+import { IndexRedirect, IndexRoute, Redirect, Route } from 'react-router';
 import React from 'react';
 
-import { UserIsAuthenticated, UserIsAdmin, CheckUserAuthentication } from '@app/components/Auth/authWrappers';
+import { CheckUserAuthentication, UserIsAdmin, UserIsAuthenticated } from '@app/components/Auth/authWrappers';
 
 import { ENTITY_TYPES } from '@app/constants/Constants';
-import { startExplorePageListener, explorePageLocationChanged, explorePageExit } from '@app/actions/explore/dataset/data';
+import {
+  explorePageExit,
+  explorePageLocationChanged,
+  startExplorePageListener
+} from '@app/actions/explore/dataset/data';
 import Acceleration from '@inject/pages/AdminPage/subpages/acceleration/Acceleration';
 import Roles from '@inject/pages/AdminPage/subpages/Roles';
-import Votes from '@inject/pages/AdminPage/subpages/Votes';
+// import Votes from '@inject/pages/AdminPage/subpages/Votes'; // To Be Removed
+import Projects from '@inject/pages/SettingPage/subpages/projects/Projects';
 import Queues from '@inject/pages/AdminPage/subpages/WLM/Queues';
 import QAssignments from '@inject/pages/AdminPage/subpages/WLM/QAssignments';
 import EulaPage from '@inject/pages/EulaPage/EulaPage';
@@ -30,9 +35,12 @@ import PATListPage from '@inject/pages/AccountPage/personalAccessTokens/PATListP
 import SSOLandingPage from '@inject/pages/AuthenticationPage/components/SSOLandingPage';
 import { resetModuleState } from '@app/actions/modulesState';
 import { exploreStateKey } from '@app/selectors/explore';
-import { LOGIN_PATH, SIGNUP_PATH } from '@app/sagas/loginLogout';
+import { LOGIN_PATH, SIGNUP_PATH, SSO_LANDING_PATH } from '@app/sagas/loginLogout';
 import { lazy } from '@app/components/Lazy';
 import Activation from '@inject/pages/AdminPage/subpages/Activation';
+import ReflectionJobsPage from '@inject/pages/JobPage/ReflectionJobsPage';
+import SettingPage from '@inject/pages/SettingPage/SettingPage';
+import SettingModals from '@inject/pages/SettingPage/SettingModals';
 
 import App from './containers/App';
 
@@ -59,10 +67,8 @@ import Advanced from './pages/AdminPage/subpages/Advanced';
 import Provisioning from './pages/AdminPage/subpages/Provisioning';
 import Support from './pages/AdminPage/subpages/Support';
 
-
 import AdminModals from './pages/AdminPage/AdminModals';
 import AccountModals from './pages/AccountPage/AccountModals';
-
 
 import JobPage from './pages/JobPage/JobPage';
 import JobModals from './pages/JobPage/JobModals';
@@ -115,6 +121,7 @@ export default dispatch => (
     <Redirect from='/*/**/' to='/*/**'/>
     <Route path='/reload' component={ReloadPage} />
     <Route path='/sso' component={SSOLandingPage} />
+    <Route path={SSO_LANDING_PATH} component={SSOLandingPage} />
     <Route component={Page}>
       <Route path='/eula' component={EulaPage} />
       <Route component={CheckUserAuthentication}>
@@ -126,6 +133,7 @@ export default dispatch => (
     <Route component={CheckUserAuthentication}>
       <Route component={UserIsAuthenticated(JobModals)}>
         <Route component={Page}>
+          <Route path='/jobs/reflection/:reflectionId' component={ReflectionJobsPage} />
           <Route path='/jobs(/:queryId)' component={JobPage} />
         </Route>
       </Route>
@@ -135,6 +143,14 @@ export default dispatch => (
             <IndexRedirect to='/account/info' />
             <Route path='/account/info' component={Info} />
             <Route path='/account/personalTokens' component={PATListPage} />
+          </Route>
+        </Route>
+      </Route>
+      <Route component={UserIsAdmin(SettingModals)}>
+        <Route component={Page}>
+          <Route path='/setting' component={SettingPage} >
+            <IndexRedirect to='/setting/projects' />
+            <Route path='/setting/projects' component={Projects} />
           </Route>
         </Route>
       </Route>
@@ -150,7 +166,7 @@ export default dispatch => (
             <Route path='/admin/provisioning' component={Provisioning} />
             <Route path='/admin/activation' component={Activation}/>
             <Route path='/admin/support' component={Support} />
-            <Route path='/admin/votes' component={Votes} />
+            {/* <Route path='/admin/votes' component={Votes} /> // To Be Removed */}
             <Route path='/admin/queues' component={Queues} />
             <Route path='/admin/rules' component={QAssignments} />
           </Route>
@@ -168,6 +184,8 @@ export default dispatch => (
           </Route>
           <Route path='/spaces/list' component={AllSpaces} />
           <Route path='/sources/list' component={AllSources} />
+          <Route path='/sources/datalake/list' component={AllSources} />
+          <Route path='/sources/external/list' component={AllSources} />
         </Route>
       </Route>
       <Route component={MainMasterPage}>

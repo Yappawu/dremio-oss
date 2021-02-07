@@ -17,6 +17,7 @@ package com.dremio.exec.planner.sql.handlers.query;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import org.apache.calcite.rel.RelNode;
@@ -44,18 +45,21 @@ import com.dremio.exec.catalog.SourceCatalog;
 import com.dremio.exec.physical.PhysicalPlan;
 import com.dremio.exec.physical.base.PhysicalOperator;
 import com.dremio.exec.physical.base.WriterOptions;
+import com.dremio.exec.planner.DremioVolcanoPlanner;
 import com.dremio.exec.planner.logical.CreateTableEntry;
 import com.dremio.exec.planner.logical.Rel;
 import com.dremio.exec.planner.logical.ScreenRel;
 import com.dremio.exec.planner.logical.WriterRel;
 import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.planner.physical.Prel;
+import com.dremio.exec.planner.physical.PrelUtil;
 import com.dremio.exec.planner.sql.CalciteArrowHelper;
 import com.dremio.exec.planner.sql.SqlExceptionHelper;
 import com.dremio.exec.planner.sql.handlers.ConvertedRelNode;
 import com.dremio.exec.planner.sql.handlers.PrelTransformer;
 import com.dremio.exec.planner.sql.handlers.SqlHandlerConfig;
 import com.dremio.exec.planner.sql.handlers.SqlHandlerUtil;
+import com.dremio.exec.planner.sql.handlers.ViewAccessEvaluator;
 import com.dremio.exec.planner.sql.parser.DataAdditionCmdCall;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.store.DatasetRetrievalOptions;
@@ -121,6 +125,12 @@ public abstract class DataAdditionCmdHandler implements SqlToPlanHandler {
       }
 
       final RelNode queryRelNode = convertedRelNode.getConvertedNode();
+      ViewAccessEvaluator viewAccessEvaluator = null;
+      if (config.getConverter().getSubstitutionProvider().isDefaultRawReflectionEnabled()) {
+        final RelNode convertedRelWithExpansionNodes = ((DremioVolcanoPlanner) queryRelNode.getCluster().getPlanner()).getOriginalRoot();
+        viewAccessEvaluator = new ViewAccessEvaluator(convertedRelWithExpansionNodes, config);
+        config.getContext().getExecutorService().submit(viewAccessEvaluator);
+      }
       final RelNode newTblRelNode = SqlHandlerUtil.resolveNewTableRel(false, sqlCmd.getFieldNames(),
           validatedRowType, queryRelNode, !isCreate());
 
@@ -170,6 +180,13 @@ public abstract class DataAdditionCmdHandler implements SqlToPlanHandler {
         isIcebergTable() ? () -> refreshDataset(datasetCatalog, path, isCreate()) : null);
 
       PrelTransformer.log(config, "Dremio Plan", plan, logger);
+
+      if (viewAccessEvaluator != null) {
+        viewAccessEvaluator.getLatch().await(config.getContext().getPlannerSettings().getMaxPlanningPerPhaseMS(), TimeUnit.MILLISECONDS);
+        if (viewAccessEvaluator.getException() != null) {
+          throw viewAccessEvaluator.getException();
+        }
+      }
 
       return plan;
 
@@ -221,7 +238,8 @@ public abstract class DataAdditionCmdHandler implements SqlToPlanHandler {
       icebergTableProps = new IcebergTableProps(null, queryId,
         null,
         isCreate() ? options.getPartitionColumns() : partitionColumns,
-        isCreate() ? IcebergOperation.Type.CREATE : IcebergOperation.Type.INSERT);
+        isCreate() ? IcebergOperation.Type.CREATE : IcebergOperation.Type.INSERT,
+        key.getName());
 
     }
 
@@ -240,7 +258,7 @@ public abstract class DataAdditionCmdHandler implements SqlToPlanHandler {
     if (!isCreate()) {
       BatchSchema partSchemaWithSelectedFields = tableSchemaFromKVStore.subset(fieldNames).orElse(tableSchemaFromKVStore);
       queryRowType = CalciteArrowHelper.wrap(partSchemaWithSelectedFields)
-          .toCalciteRecordType(convertedRelNode.getCluster().getTypeFactory());
+          .toCalciteRecordType(convertedRelNode.getCluster().getTypeFactory(), PrelUtil.getPlannerSettings(convertedRelNode.getCluster()).isFullNestedSchemaSupport());
     }
 
     convertedRelNode = new WriterRel(convertedRelNode.getCluster(),

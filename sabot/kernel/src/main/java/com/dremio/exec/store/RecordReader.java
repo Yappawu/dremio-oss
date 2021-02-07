@@ -15,17 +15,27 @@
  */
 package com.dremio.exec.store;
 
+import java.util.List;
 import java.util.Map;
 
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.ValueVector;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
+import com.dremio.common.expression.SchemaPath;
+import com.dremio.common.types.TypeProtos.MinorType;
+import com.dremio.common.types.Types;
+import com.dremio.common.util.MajorTypeHelper;
+import com.dremio.exec.record.BatchSchema;
+import com.dremio.exec.record.BatchSchema.SelectionVectorMode;
 import com.dremio.sabot.op.scan.OutputMutator;
 
 public interface RecordReader extends AutoCloseable {
-  public static final long ALLOCATOR_INITIAL_RESERVATION = 1*1024*1024;
-  public static final long ALLOCATOR_MAX_RESERVATION = 20L*1000*1000*1000;
+  String SPLIT_INFORMATION = "splits";
+  BatchSchema SPLIT_GEN_SCAN_SCHEMA = BatchSchema.newBuilder()
+    .addField(MajorTypeHelper.getFieldForNameAndMajorType(SPLIT_INFORMATION, Types.optional(MinorType.VARBINARY)))
+    .setSelectionVectorMode(SelectionVectorMode.NONE)
+    .build();
 
   /**
    * Configure the RecordReader with the provided schema and the record batch that should be written to.
@@ -45,4 +55,19 @@ public interface RecordReader extends AutoCloseable {
    * @return The number of additional records added to the output.
    */
   int next();
+
+  /**
+   * Returns the list of columns that were not boosted.
+   *
+   * @return the list of columns that were not boosted
+   */
+  default List<SchemaPath> getColumnsToBoost() {
+    return null;
+  }
+
+  /**
+   * Adds a runtime filter to the record reader
+   * @param runtimeFilter
+   */
+  default void addRuntimeFilter(RuntimeFilter runtimeFilter) {}
 }

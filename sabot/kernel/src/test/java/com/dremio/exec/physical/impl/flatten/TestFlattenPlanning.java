@@ -43,10 +43,10 @@ public class TestFlattenPlanning extends PlanTestBase {
         " select comp, rownum " +
         " from (select flatten(complex) comp, rownum " +
         "      from cp.\"/store/json/test_flatten_mappify2.json\") " +
-        " where comp > 1 " +   // should not be pushed down
+        " where comp IS NOT NULL " +   // should not be pushed down
         "   and rownum = 100"; // should be pushed down.
 
-    final String[] expectedPlans = {"(?s)Filter.*>.*Flatten.*Filter.*=.*"};
+    final String[] expectedPlans = {"(?s)Filter.*IS NOT NULL.*Flatten.*Filter.*=.*"};
     final String[] excludedPlans = {"Filter.*AND.*"};
     PlanTestBase.testPlanMatchingPatterns(query, expectedPlans, excludedPlans);
   }
@@ -56,13 +56,29 @@ public class TestFlattenPlanning extends PlanTestBase {
     final String query =
         " select comp, rownum " +
             " from (select flatten(complex) comp, rownum " +
-            "      from cp.\"/store/json/test_flatten_mappify2.json\") " +
-            " where comp > 1 " +   // should NOT be pushed down
+            "      from cp.\"/store/json/test_flatten_mappify2.json\") t" +
+            " where comp IS NOT NULL " +   // should NOT be pushed down
             "   OR rownum = 100";  // should NOT be pushed down.
 
     final String[] expectedPlans = {"(?s)Filter.*OR.*Flatten"};
     final String[] excludedPlans = {"(?s)Filter.*Flatten.*Filter.*"};
     PlanTestBase.testPlanMatchingPatterns(query, expectedPlans, excludedPlans);
+  }
+
+  @Test
+  public void dx26675() throws Exception {
+    try {
+      properties.set(DremioConfig.LEGACY_STORE_VIEWS_ENABLED, "true");
+      final String vds = "create vds dfs_test.flatten26675 as SELECT * FROM cp.\"flatten/dx26675.json\"";
+      testNoResult(vds);
+
+      final String query = "SELECT t2.flattened.a, t2.flattened.b " +
+        "FROM (select flatten(t1.list_col) as flattened from dfs_test.flatten26675 as t1) t2";
+
+      test(query);
+    } finally {
+      properties.clear(DremioConfig.LEGACY_STORE_VIEWS_ENABLED);
+    }
   }
 
   @Test

@@ -283,7 +283,6 @@ export class YarnForm extends Component {
 
   render() {
     const { fields, handleSubmit, style, provision, dirty } = this.props;
-
     const confirmText = isRestartRequired(provision, dirty) ? la('Restart') : la('Save & Launch');
     const hostNameLabel = YarnForm.hostNameLabel(this.props.values);
 
@@ -307,7 +306,7 @@ export class YarnForm extends Component {
               </div>
             </div>
             <Checkbox
-              style={{paddingTop: label.fontSize}}
+              style={{paddingTop: 26}}
               label={la('This is a secure engine')}
               disabled={isEditMode(provision)}
               {...fields.isSecure}

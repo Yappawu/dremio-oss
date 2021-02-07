@@ -29,12 +29,13 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import com.dremio.BaseTestQuery;
+import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.planner.sql.ParserConfig;
 import com.dremio.io.file.Path;
 
 public class TestIcebergSchemaEvolution extends BaseTestQuery {
 
-  private ParserConfig parserConfig = new ParserConfig(ParserConfig.QUOTING, 100);
+  private ParserConfig parserConfig = new ParserConfig(ParserConfig.QUOTING, 100, PlannerSettings.FULL_NESTED_SCHEMA_SUPPORT.getDefault().getBoolVal());
 
   @Rule
   public ExpectedException expectedEx = ExpectedException.none();
@@ -200,10 +201,9 @@ public class TestIcebergSchemaEvolution extends BaseTestQuery {
       changeColumn(TEMP_SCHEMA + "." + complex_column_rename_test, "col2", "c2", "int");
       Thread.sleep(1001);
 
-      IcebergOperation.renameColumn(
-        Path.of(getDfsTestTmpSchemaLocation()).resolve(complex_column_rename_test),
-        "col1", "c1",
-        new Configuration());
+      IcebergOperation.renameColumn(complex_column_rename_test,
+              Path.of(getDfsTestTmpSchemaLocation()).resolve(complex_column_rename_test), "col1",
+              "c1", new Configuration());
       Thread.sleep(1001);
 
       String metadataRefresh = "alter table " + TEMP_SCHEMA + "." + complex_column_rename_test +

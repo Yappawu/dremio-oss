@@ -17,6 +17,7 @@ package com.dremio.exec.expr.fn.impl.conv;
 
 import javax.inject.Inject;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.holders.VarBinaryHolder;
 import org.apache.arrow.vector.holders.VarCharHolder;
 
@@ -25,8 +26,6 @@ import com.dremio.exec.expr.annotations.FunctionTemplate;
 import com.dremio.exec.expr.annotations.Output;
 import com.dremio.exec.expr.annotations.Param;
 import com.dremio.exec.expr.fn.FunctionErrorContext;
-
-import io.netty.buffer.ArrowBuf;
 
 // Function called on convert_from(<string>, 'UTF8', '?') -- with the third argument being the replacement character (empty string OK)
 @SuppressWarnings("unused")
@@ -53,11 +52,11 @@ public class UTF8ConvertReplace implements SimpleFunction {
     buffer = buffer.reallocIfNeeded(in.end - in.start);
     out.start = 0;
     if (replace.end == replace.start) {
-      out.end = com.dremio.exec.expr.fn.impl.StringFunctionUtil.copyUtf8(in.buffer.asNettyBuffer(), in.start, in
+      out.end = com.dremio.exec.expr.fn.impl.StringFunctionUtil.copyUtf8(io.netty.buffer.NettyArrowBuf.unwrapBuffer(in.buffer), in.start, in
         .end, buffer);
     } else {
-      out.end = com.dremio.exec.expr.fn.impl.StringFunctionUtil.copyReplaceUtf8(in.buffer.asNettyBuffer(), in
-        .start, in.end, buffer.asNettyBuffer(), replace.buffer.getByte(replace.start));
+      out.end = com.dremio.exec.expr.fn.impl.StringFunctionUtil.copyReplaceUtf8(io.netty.buffer.NettyArrowBuf.unwrapBuffer(in.buffer), in
+        .start, in.end, io.netty.buffer.NettyArrowBuf.unwrapBuffer(buffer), replace.buffer.getByte(replace.start));
     }
     out.buffer = buffer;
   }

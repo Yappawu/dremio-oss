@@ -24,4 +24,6 @@ interface ContainerProvider {
 
   Stream<ContainerCreator> getContainerCreators() throws IOException;
 
+  default void assertContainerExists(final String containerName) {
+  }
 }

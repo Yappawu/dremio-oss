@@ -22,13 +22,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.SimpleIntVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.complex.impl.VectorContainerWriter;
-import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -42,14 +42,13 @@ import org.apache.parquet.hadoop.ColumnChunkIncReadStore;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.io.ColumnIOFactory;
 import org.apache.parquet.io.InvalidRecordException;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.OriginalType;
 import org.apache.parquet.schema.Type;
 
 import com.dremio.common.arrow.DremioArrowSchema;
@@ -57,9 +56,9 @@ import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.expression.PathSegment;
 import com.dremio.common.expression.SchemaPath;
-import com.dremio.exec.expr.TypeHelper;
 import com.dremio.exec.store.parquet.AbstractParquetReader;
 import com.dremio.exec.store.parquet.InputStreamProvider;
+import com.dremio.exec.store.parquet.MutableParquetMetadata;
 import com.dremio.exec.store.parquet.ParquetColumnResolver;
 import com.dremio.exec.store.parquet.ParquetScanProjectedColumns;
 import com.dremio.exec.store.parquet.SchemaDerivationHelper;
@@ -81,7 +80,7 @@ public class ParquetRowiseReader extends AbstractParquetReader {
   // same as the DEFAULT_RECORDS_TO_READ_IF_NOT_FIXED_WIDTH in DeprecatedParquetVectorizedReader
 
   private ParquetScanProjectedColumns projectedColumns;
-  private ParquetMetadata footer;
+  private MutableParquetMetadata footer;
   private MessageType schema;
   private FileSystem fileSystem;
   private VectorContainerWriter writer;
@@ -107,10 +106,10 @@ public class ParquetRowiseReader extends AbstractParquetReader {
   private SchemaDerivationHelper schemaHelper;
   private VectorizedBasedFilter vectorizedBasedFilter;
 
-  public ParquetRowiseReader(OperatorContext context, ParquetMetadata footer, int rowGroupIndex, String path,
-                              ParquetScanProjectedColumns projectedColumns, FileSystem fileSystem, SchemaDerivationHelper schemaHelper,
-                              SimpleIntVector deltas, InputStreamProvider inputStreamProvider, CompressionCodecFactory codec,
-                              boolean readEvenIfSchemaChanges) {
+  public ParquetRowiseReader(OperatorContext context, MutableParquetMetadata footer, int rowGroupIndex, String path,
+                             ParquetScanProjectedColumns projectedColumns, FileSystem fileSystem, SchemaDerivationHelper schemaHelper,
+                             SimpleIntVector deltas, InputStreamProvider inputStreamProvider, CompressionCodecFactory codec,
+                             boolean readEvenIfSchemaChanges) {
     super(context, projectedColumns.getBatchSchemaProjectedColumns(), deltas);
     this.footer = footer;
     this.fileSystem = fileSystem;
@@ -123,19 +122,19 @@ public class ParquetRowiseReader extends AbstractParquetReader {
     this.readEvenIfSchemaChanges = readEvenIfSchemaChanges;
   }
 
-  public ParquetRowiseReader(OperatorContext context, ParquetMetadata footer, int rowGroupIndex, String path,
+  public ParquetRowiseReader(OperatorContext context, MutableParquetMetadata footer, int rowGroupIndex, String path,
                              ParquetScanProjectedColumns projectedColumns, FileSystem fileSystem, SchemaDerivationHelper schemaHelper,
                              SimpleIntVector deltas, InputStreamProvider inputStreamProvider, CompressionCodecFactory codec) {
     this(context, footer, rowGroupIndex, path, projectedColumns, fileSystem, schemaHelper, deltas, inputStreamProvider, codec, false);
   }
 
-  public ParquetRowiseReader(OperatorContext context, ParquetMetadata footer, int rowGroupIndex, String path,
+  public ParquetRowiseReader(OperatorContext context, MutableParquetMetadata footer, int rowGroupIndex, String path,
                              ParquetScanProjectedColumns projectedColumns, FileSystem fileSystem, SchemaDerivationHelper schemaHelper,
                              InputStreamProvider inputStreamProvider, CompressionCodecFactory codec) {
     this(context, footer, rowGroupIndex, path, projectedColumns, fileSystem, schemaHelper, null, inputStreamProvider, codec);
   }
 
-  public ParquetRowiseReader(OperatorContext context, ParquetMetadata footer, int rowGroupIndex, String path,
+  public ParquetRowiseReader(OperatorContext context, MutableParquetMetadata footer, int rowGroupIndex, String path,
                              ParquetScanProjectedColumns projectedColumns, FileSystem fileSystem, SchemaDerivationHelper schemaHelper,
                              InputStreamProvider inputStreamProvider, CompressionCodecFactory codec, boolean readEvenIfSchemaChanges) {
     this(context, footer, rowGroupIndex, path, projectedColumns, fileSystem, schemaHelper, null, inputStreamProvider, codec, readEvenIfSchemaChanges);
@@ -243,32 +242,19 @@ public class ParquetRowiseReader extends AbstractParquetReader {
       } else {
         columnsNotFound = new ArrayList<>();
         projection = getProjection(schema, columnResolver.getProjectedParquetColumns(), columnResolver, columnsNotFound);
-        if(projection == null){
-            projection = schema;
-        }
-        if(columnsNotFound!=null && columnsNotFound.size()>0) {
-          nullFilledVectors = new ArrayList<>();
-          for(SchemaPath col: columnsNotFound){
-            nullFilledVectors.add(
-              (IntVector)output.addField(new Field(col.getAsUnescapedPath(), true,
-                              MinorType.INT.getType(), null),
-                      (Class<? extends ValueVector>) TypeHelper.getValueVectorClass(MinorType.INT)));
-          }
-        }
         if(columnsNotFound.size()==getColumns().size()){
           noColumnsFound=true;
         }
       }
 
+      writer = new VectorContainerWriter(output);
       if(!noColumnsFound) {
-        writer = new VectorContainerWriter(output);
         // Discard the columns not found in the schema when create ParquetRecordMaterializer, since they have been added to output already.
         final Collection<SchemaPath> columns = columnsNotFound == null || columnsNotFound.size() == 0 ? columnResolver.getProjectedParquetColumns():
           CollectionUtils.subtract(columnResolver.getProjectedParquetColumns(), columnsNotFound);
         recordMaterializer = new ParquetRecordMaterializer(columnResolver, output, writer, projection, columns, context.getOptions(), arrowSchema, schemaHelper);
+        logger.debug("Requesting schema {}", projection);
       }
-
-      logger.debug("Requesting schema {}", projection);
 
       if (output.getSchemaChanged() && !readEvenIfSchemaChanges) {
         logger.info("Detected schema change. Not initializing further readers.");
@@ -278,23 +264,26 @@ public class ParquetRowiseReader extends AbstractParquetReader {
       boolean schemaOnly = (operatorContext == null) || (footer.getBlocks().size() == 0);
 
       if (!schemaOnly) {
-
-        Map<ColumnPath, ColumnChunkMetaData> paths = new HashMap<>();
-
-        for (ColumnChunkMetaData md : footer.getBlocks().get(rowGroupIndex).getColumns()) {
-          paths.put(md.getPath(), md);
-        }
-
         Path filePath = Path.of(path);
 
         BlockMetaData blockMetaData = footer.getBlocks().get(rowGroupIndex);
+        Preconditions.checkArgument(blockMetaData != null, "Parquet footer does not contain information about row group");
 
         recordCount = blockMetaData.getRowCount();
 
         pageReadStore = new ColumnChunkIncReadStore(recordCount,
           codec, operatorContext.getAllocator(),
           filePath, inputStreamProvider);
+      }
 
+      if (!schemaOnly && !noColumnsFound) {
+
+
+        Map<ColumnPath, ColumnChunkMetaData> paths = new HashMap<>();
+
+        for (ColumnChunkMetaData md : footer.getBlocks().get(rowGroupIndex).getColumns()) {
+          paths.put(md.getPath(), md);
+        }
         for (String[] path : projection.getPaths()) {
           Type type = schema.getType(path);
           if (type.isPrimitive()) {
@@ -303,21 +292,22 @@ public class ParquetRowiseReader extends AbstractParquetReader {
           }
         }
 
-      }
-
-      if (!schemaOnly && !noColumnsFound) {
         ColumnIOFactory factory = new ColumnIOFactory(false);
         MessageColumnIO columnIO = factory.getColumnIO(projection, schema);
 
-        if (deltas != null) {
-          recordReader = columnIO.getRecordReader(pageReadStore, recordMaterializer, new UnboundRecordFilter() {
-            @Override
-            public RecordFilter bind(Iterable<ColumnReader> readers) {
-              return vectorizedBasedFilter = new VectorizedBasedFilter(readers, deltas);
-            }
-          });
+        if (footer.getBlocks().get(rowGroupIndex).getRowCount() > 0) {
+          if (deltas != null) {
+            recordReader = columnIO.getRecordReader(pageReadStore, recordMaterializer, new UnboundRecordFilter() {
+              @Override
+              public RecordFilter bind(Iterable<ColumnReader> readers) {
+                return vectorizedBasedFilter = new VectorizedBasedFilter(readers, deltas);
+              }
+            });
+          } else {
+            recordReader = columnIO.getRecordReader(pageReadStore, recordMaterializer);
+          }
         } else {
-          recordReader = columnIO.getRecordReader(pageReadStore, recordMaterializer);
+          recordReader = null;
         }
       }
     } catch (Exception e) {
@@ -328,35 +318,138 @@ public class ParquetRowiseReader extends AbstractParquetReader {
   private void verifyDecimalTypesAreSame(OutputMutator output, ParquetColumnResolver columnResolver) {
     for (ValueVector vector : output.getVectors()) {
       Field fieldInSchema = vector.getField();
-      if (fieldInSchema.getType().getTypeID() == ArrowType.ArrowTypeID.Decimal) {
-        ArrowType.Decimal typeInTable = (ArrowType.Decimal) fieldInSchema.getType();
-        Type typeInParquet = null;
-        // the field in arrow schema may not be present in hive schema
-        try {
-          typeInParquet  = schema.getType(columnResolver.getParquetColumnName(fieldInSchema.getName()));
-        } catch (InvalidRecordException e) {
-        }
-        if (typeInParquet == null) {
-          continue;
-        }
-        boolean schemaMisMatch = true;
-        OriginalType originalType = typeInParquet.getOriginalType();
-        if (originalType.equals(OriginalType.DECIMAL) ) {
-          int precision = typeInParquet
-            .asPrimitiveType().getDecimalMetadata().getPrecision();
-          int scale = typeInParquet.asPrimitiveType().getDecimalMetadata().getScale();
-          ArrowType decimalType = new ArrowType.Decimal(precision, scale);
-          if (decimalType.equals(typeInTable)) {
-            schemaMisMatch = false;
-          }
-        }
-        if (schemaMisMatch) {
-          throw UserException.schemaChangeError().message("Mixed types "+ fieldInSchema.getType()
-            + " , " + typeInParquet + " is not supported.")
-            .build(logger);
-        }
+      try {
+        areDecimalTypesCompatible(schema.getType(columnResolver.getParquetColumnName(
+          fieldInSchema.getName())), fieldInSchema);
+      } catch (InvalidRecordException e) {
+        // the field in Arrow schema may not be present in Hive schema
       }
     }
+  }
+
+  /**
+   * Recursively check the complex types for compatibility of decimal types
+   *
+   * @throws UserException if file and table have incompatible decimals (different scale and/or precision)
+   */
+  private void areDecimalTypesCompatible(Type fileType, Field tableType) {
+    Preconditions.checkArgument(tableType != null, "Invalid argument");
+
+    // ignore if there is no corresponding field in file
+    if (fileType == null) {
+      return;
+    }
+
+    ArrowType fieldTypeInTable = tableType.getType();
+    LogicalTypeAnnotation logicalTypeInFile = fileType.getLogicalTypeAnnotation();
+
+    // if both are primitive types
+    if (areFileAndTableTypesPrimitives(fieldTypeInTable, fileType)) {
+      // throw exception if both file and table types are incompatible decimals (decimals with different scale and/or precision)
+      if (areFileAndTableTypesPrimitiveDecimals(fieldTypeInTable, fileType)
+        && !areDecimalTypesEqual(fieldTypeInTable, logicalTypeInFile)) {
+          final String errorMessage = String.format("Mixed types %s and %s for field \"%s\" are not supported",
+            tableType.getType().toString().toLowerCase(), logicalTypeInFile.toString().toLowerCase(), fileType.getName());
+          throw UserException.schemaChangeError()
+            .message(errorMessage)
+            .build(logger);
+      }
+
+      // ignore if they are both compatible primitive decimals or at least one of them is not a decimal
+      return;
+    }
+
+    // if both the file and table types are incompatible complex types
+    if (!areFieldAndTableTypesCompatibleComplexTypes(fieldTypeInTable, fileType)) {
+      return;
+    }
+
+    List<Field> tableTypeChildren = tableType.getChildren();
+    List<Type> fileTypeChildren = fileType.asGroupType().getFields();
+
+    // if table contains a list, check just the first child
+    if (isFileFieldListType(logicalTypeInFile)) {
+      areDecimalTypesCompatible(
+        fileTypeChildren.get(0).asGroupType().getType(0),
+        tableTypeChildren.get(0));
+    }
+
+    // if table contains a struct, recursively check all the children
+    Preconditions.checkState(tableTypeChildren != null, "Invalid state");
+    if (!tableTypeChildren.isEmpty()) {
+      // if there are two conflicting lower-case children names, retain the existing one
+      Map<String, Type> fileFieldChildren = fileTypeChildren.stream().collect(
+        Collectors.toMap(f -> f.getName().toLowerCase(), f -> f, (existing, replacement) -> existing)
+      );
+      for (Field tableField : tableType.getChildren()) {
+        areDecimalTypesCompatible(fileFieldChildren.getOrDefault(
+          tableField.getName().toLowerCase(), null), tableField);
+      }
+    }
+  }
+
+  /**
+   * Return true if the precision and scale of both the decimal types are equal
+   */
+  private boolean areDecimalTypesEqual(ArrowType fieldTypeInTable, LogicalTypeAnnotation fieldTypeInFile) {
+    Preconditions.checkArgument(areFileAndTableTypesPrimitiveDecimals(fieldTypeInTable, fieldTypeInFile),
+      "Field type in table and file should be decimals");
+    int precision = ((LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) fieldTypeInFile).getPrecision();
+    int scale = ((LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) fieldTypeInFile).getScale();
+    ArrowType decimalType = new ArrowType.Decimal(precision, scale);
+    return decimalType.equals(fieldTypeInTable);
+  }
+
+  /**
+   * Returns true iff both the file and table field types are both structs or both lists
+   */
+  private boolean areFieldAndTableTypesCompatibleComplexTypes(ArrowType fieldTypeInTable, Type fileType) {
+    return areFileAndTableTypesComplex(fieldTypeInTable, fileType)
+      && (isTableFieldListType(fieldTypeInTable) || isTableFieldStructType(fieldTypeInTable))
+      && areComplexTypesSame(fieldTypeInTable, fileType);
+  }
+
+  /**
+   * Returns true if fields in both the file and table are structs or lists
+   */
+  private boolean areComplexTypesSame(ArrowType fieldTypeInTable, Type fieldTypeInFile) {
+    Preconditions.checkArgument(areFileAndTableTypesComplex(fieldTypeInTable, fieldTypeInFile),
+      "Field types being compared should be either structs or lists");
+    boolean isFileFieldListType = isFileFieldListType(fieldTypeInFile.getLogicalTypeAnnotation());
+    if (isTableFieldListType(fieldTypeInTable)) {
+      return isFileFieldListType;
+    }
+    return !isFileFieldListType;
+  }
+
+  private boolean areFileAndTableTypesPrimitives(ArrowType fieldTypeInTable, Type fileType) {
+    return !fieldTypeInTable.isComplex() && fileType.isPrimitive();
+  }
+
+  private boolean areFileAndTableTypesPrimitiveDecimals(ArrowType fieldTypeInTable, Type fieldTypeInFile) {
+    LogicalTypeAnnotation fileLogicalType = fieldTypeInFile.getLogicalTypeAnnotation();
+    return areFileAndTableTypesPrimitiveDecimals(fieldTypeInTable, fileLogicalType);
+  }
+
+  private boolean areFileAndTableTypesPrimitiveDecimals(ArrowType fieldTypeInTable, LogicalTypeAnnotation fieldTypeInFile) {
+    return fieldTypeInTable.getTypeID().equals(ArrowType.ArrowTypeID.Decimal)
+      && fieldTypeInFile instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation;
+  }
+
+  private boolean areFileAndTableTypesComplex(ArrowType fieldTypeInTable, Type fileType) {
+    return fieldTypeInTable.isComplex() && !fileType.isPrimitive();
+  }
+
+  private boolean isTableFieldStructType(ArrowType fieldTypeInTable) {
+    return fieldTypeInTable.getTypeID().equals(ArrowType.ArrowTypeID.Struct);
+  }
+
+  private boolean isTableFieldListType(ArrowType fieldTypeInTable) {
+    return fieldTypeInTable.getTypeID().equals(ArrowType.ArrowTypeID.List);
+  }
+
+  private boolean isFileFieldListType(LogicalTypeAnnotation logicalTypeInFile) {
+    return logicalTypeInFile instanceof LogicalTypeAnnotation.ListLogicalTypeAnnotation;
   }
 
   protected void handleAndRaise(String s, Exception e) {
@@ -383,6 +476,11 @@ public class ParquetRowiseReader extends AbstractParquetReader {
     int count = 0;
     long maxRecordCount = 0;
     try {
+      // in case of no row groups or zero rows in the row group, return 0
+      if (footer.getBlocks() == null || footer.getBlocks().size() == 0 ||
+          footer.getBlocks().get(rowGroupIndex).getRowCount() == 0) {
+        return 0;
+      }
       // No columns found in the file were selected, simply return a full batch of null records for each column requested
       if (noColumnsFound) {
         if (mockRecordsRead == footer.getBlocks().get(rowGroupIndex).getRowCount()) {
@@ -390,11 +488,7 @@ public class ParquetRowiseReader extends AbstractParquetReader {
         }
         long recordsToRead = 0;
         recordsToRead = Math.min(numRowsPerBatch, footer.getBlocks().get(rowGroupIndex).getRowCount() - mockRecordsRead);
-        if (nullFilledVectors != null) {
-          for (ValueVector vv : nullFilledVectors) {
-            vv.setValueCount((int) recordsToRead);
-          }
-        }
+        writer.setValueCount((int)recordsToRead);
         mockRecordsRead += recordsToRead;
         totalRead += recordsToRead;
         return (int) recordsToRead;

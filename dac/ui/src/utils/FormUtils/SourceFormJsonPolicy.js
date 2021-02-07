@@ -31,12 +31,11 @@ import MetadataRefreshConfig from 'utils/FormUtils/MetadataRefreshConfig';
 import PropertListConfig from 'utils/FormUtils/PropertyListConfig';
 import SharingWidgetConfig from 'utils/FormUtils/SharingWidgetConfig';
 import ValueListConfig from 'utils/FormUtils/ValueListConfig';
-import {isCME} from 'dyn-load/utils/versionUtils';
-import { PASSWORD_FIELD, SECRET_RESOURCE_URL_FIELD, USER_NAME_FIELD } from '@app/components/Forms/Credentials';
-
+import { isCME } from 'dyn-load/utils/versionUtils';
+import { PASSWORD_FIELD, SECRET_RESOURCE_URL_FIELD, USER_NAME_FIELD, KERBEROS_FIELD } from '@app/components/Forms/Credentials';
+import addAlwaysPresent from 'dyn-load/utils/FormUtils/globalSourceConfigUtil';
 
 export default class SourceFormJsonPolicy {
-
   static deepCopyConfig(config) {
     return FormUtils.deepCopyConfig(config);
   }
@@ -97,6 +96,9 @@ export default class SourceFormJsonPolicy {
 
     // if no uiConfig, return functional
     if (!uiConfig) return this.makeCombinedFromFunctionalConfig(functionalConfig);
+
+    // add any always preset source options
+    addAlwaysPresent(functionalConfig, uiConfig);
 
     // combine high level form properties
     const mergedMetaConfig = this.mergeFormMetadataConfig(uiConfig, functionalConfig);
@@ -360,7 +362,7 @@ export default class SourceFormJsonPolicy {
     // move loose elements to general tab no-name section
     let looseElements = form.getDirectElements();
 
-    // if we have credentials, remove username/password/secretUrl from loose elements
+    // if we have credentials, remove username/password/secretUrl/kerberos from loose elements
     const hasCredentials = functionalElements.find((elem) => {
       return elem.type === 'credentials';
     });
@@ -372,7 +374,8 @@ export default class SourceFormJsonPolicy {
         return [
           USER_NAME_FIELD,
           PASSWORD_FIELD,
-          SECRET_RESOURCE_URL_FIELD
+          SECRET_RESOURCE_URL_FIELD,
+          KERBEROS_FIELD
         ].indexOf(propName) === -1;
       });
     }

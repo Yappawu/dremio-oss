@@ -163,7 +163,7 @@ export const EDIT_PROVISION_SUCCESS = 'EDIT_PROVISION_SUCCESS';
 export const EDIT_PROVISION_FAILURE = 'EDIT_PROVISION_FAILURE';
 
 function fetchEditProvision(data, viewId) {
-  const meta = {viewId};
+  const meta = {viewId, entityId: data.id};
 
   const apiCall = new APIV2Call()
     .paths('provision/cluster')
@@ -219,3 +219,16 @@ export function openMoreInfoProvisionModal(entityId) {
     }));
   };
 }
+
+export function openAdjustWorkersModal(entityId) {
+  return (dispatch, getStore) => {
+    const location = getStore().routing.locationBeforeTransitions;
+    return dispatch(push({
+      ...location,
+      state: {modal: 'AdjustWorkersModal', entityId}
+    }));
+  };
+}
+
+export const extraProvisingPageMapDispatchToProps = {};
+

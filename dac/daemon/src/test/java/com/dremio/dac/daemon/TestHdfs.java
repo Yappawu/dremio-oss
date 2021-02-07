@@ -16,6 +16,7 @@
 package com.dremio.dac.daemon;
 
 import static com.dremio.common.TestProfileHelper.assumeNonMaprProfile;
+import static com.dremio.common.TestProfileHelper.isMaprProfile;
 import static com.dremio.dac.server.JobsServiceTestUtils.submitJobAndGetData;
 import static org.junit.Assert.assertEquals;
 
@@ -37,6 +38,7 @@ import org.junit.rules.TemporaryFolder;
 
 import com.dremio.common.perf.Timer;
 import com.dremio.common.util.FileUtils;
+import com.dremio.config.DremioConfig;
 import com.dremio.dac.daemon.DACDaemon.ClusterMode;
 import com.dremio.dac.model.folder.SourceFolderPath;
 import com.dremio.dac.model.job.JobDataFragment;
@@ -105,6 +107,7 @@ public class TestHdfs extends BaseTestMiniDFS {
           .autoPort(true)
           .allowTestApis(true)
           .writePath(folder.getRoot().getAbsolutePath())
+          .with(DremioConfig.FLIGHT_SERVICE_ENABLED_BOOLEAN, false)
           .clusterMode(ClusterMode.LOCAL)
           .serveUI(true),
         DremioTest.CLASSPATH_SCAN_RESULT,
@@ -119,6 +122,16 @@ public class TestHdfs extends BaseTestMiniDFS {
 
   @AfterClass
   public static void close() throws Exception {
+    /*
+     JUnit assume() call results in AssumptionViolatedException, which is handled by JUnit with a goal to ignore
+     the test having the assume() call. Multiple assume() calls, or other exceptions coupled with a single assume()
+     call, result in multiple exceptions, which aren't handled by JUnit, leading to test deemed to be failed.
+     We thus use isMaprProfile() check instead of assumeNonMaprProfile() here.
+     */
+    if (isMaprProfile()) {
+      return;
+    }
+
     try (Timer.TimedBlock b = Timer.time("TestHdfs.@AfterClass")) {
       if (dremioDaemon != null) {
         dremioDaemon.close();

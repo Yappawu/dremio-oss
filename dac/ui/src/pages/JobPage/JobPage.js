@@ -21,9 +21,11 @@ import PropTypes from 'prop-types';
 import DocumentTitle from 'react-document-title';
 import { injectIntl } from 'react-intl';
 import { flexElementAuto } from '@app/uiTheme/less/layout.less';
+import { getClusterInfo } from '@app/utils/infoUtils';
+import { getSupport } from '@app/utils/supportUtils';
 
 import {
-  updateQueryState, filterJobsData, loadItemsForFilter, loadNextJobs
+  updateQueryState, filterJobsData, loadItemsForFilter, loadNextJobs, setClusterType
 } from 'actions/jobs/jobs';
 
 import { getJobs, getDataWithItemsForFilters } from 'selectors/jobs';
@@ -50,6 +52,9 @@ export class JobPage extends Component {
     viewState: PropTypes.instanceOf(Immutable.Map),
     isNextJobsInProgress: PropTypes.bool,
     dataWithItemsForFilters: PropTypes.object,
+    clusterType: PropTypes.string,
+    admin: PropTypes.bool,
+
 
     //actions
     updateQueryState: PropTypes.func.isRequired,
@@ -57,11 +62,15 @@ export class JobPage extends Component {
     loadItemsForFilter: PropTypes.func,
     loadNextJobs: PropTypes.func,
     style: PropTypes.object,
-    intl: PropTypes.object.isRequired
+    intl: PropTypes.object.isRequired,
+    setClusterType: PropTypes.func
   };
 
   componentDidMount() {
     this.receiveProps(this.props);
+    if (this.props.clusterType === 'NA') {
+      this.handleCluster();
+    }
   }
 
   componentWillReceiveProps(nextProps) {
@@ -75,6 +84,16 @@ export class JobPage extends Component {
     } else if (!nextProps.queryState.equals(prevProps.queryState)) {
       nextProps.filterJobsData(nextProps.queryState, VIEW_ID);
     }
+  }
+
+  handleCluster = async () => {
+    const clusterInfo = await getClusterInfo();
+    const supportInfo = getSupport(this.props.admin) !== undefined ? getSupport(this.props.admin) : false;
+    const data = {
+      clusterType: clusterInfo.clusterType,
+      isSupport: supportInfo
+    };
+    clusterInfo.clusterType !== undefined ? this.props.setClusterType(data) : this.props.setClusterType('NP');
   }
 
   render() {
@@ -116,7 +135,9 @@ function mapStateToProps(state, ownProps) {
     next: state.jobs.jobs.get('next'),
     isNextJobsInProgress: state.jobs.jobs.get('isNextJobsInProgress'),
     dataWithItemsForFilters: getDataWithItemsForFilters(state),
-    viewState: getViewState(state, VIEW_ID)
+    viewState: getViewState(state, VIEW_ID),
+    clusterType: state.jobs.jobs.get('clusterType'),
+    admin: state.account.get('user').get('admin')
   };
 }
 
@@ -124,5 +145,6 @@ export default connect(mapStateToProps, {
   updateQueryState,
   filterJobsData,
   loadItemsForFilter,
-  loadNextJobs
+  loadNextJobs,
+  setClusterType
 })(JobPage);

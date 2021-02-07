@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Objects;
 
 import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.SingleRel;
@@ -114,15 +115,19 @@ public class InvalidViewRel extends SingleRel implements SelfFlatteningRel {
 
           // check the latest view.
           ViewTable latestView = (ViewTable) viewCatalog.getTableNoResolve(view.getPath());
-          if (equalsRowTypeDeep(latestView.getRowType(sqlConverter.getCluster().getTypeFactory()), rowType)) {
+          RelDataType latestViewRowType = latestView.getRowType(sqlConverter.getCluster().getTypeFactory());
+          if (equalsRowTypeDeep(latestViewRowType, rowType)) {
             // successfully updated.
             break;
           } else if (!concurrentUpdate) {
-            throw new UnableToFixVDSException(view.getPath());
+            throw new UnableToFixVDSException(view.getPath(), latestViewRowType, rowType);
           }
         }
         updated.add(view.getPath().toString());
       } catch (Exception e) {
+        if (e instanceof UnableToFixVDSException) {
+          throw UserException.validationError(e).build(logger);
+        }
         suppressed.add(new VDSOutOfDate(view.getPath(), e));
         failed.add(view.getPath().toString());
       }
@@ -151,6 +156,11 @@ public class InvalidViewRel extends SingleRel implements SelfFlatteningRel {
       }
     }
     throw b;
+  }
+
+  @Override
+  public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
+    return new InvalidViewRel(viewTable, inputs.get(0));
   }
 
   @Override
@@ -192,8 +202,9 @@ public class InvalidViewRel extends SingleRel implements SelfFlatteningRel {
 
   private static class UnableToFixVDSException extends RuntimeException {
 
-    public UnableToFixVDSException(NamespaceKey key) {
-      super("Attempted to update view/vds but result was consistent with initial construction.");
+    public UnableToFixVDSException(NamespaceKey key, RelDataType viewRowType, RelDataType validatedRowType) {
+      super(String.format("Attempted to update view/vds but result was consistent with initial construction." +
+        "\n\tTable Path: %s\n\tView: %s\n\tValidated: %s", key, viewRowType, validatedRowType));
     }
 
   }

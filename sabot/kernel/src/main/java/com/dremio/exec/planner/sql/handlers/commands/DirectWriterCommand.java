@@ -226,6 +226,7 @@ public class DirectWriterCommand<T> implements CommandRunner<Object> {
         stats,
         null,
         null,
+        null,
         context.getFunctionRegistry(),
         null,
         context.getOptions(),
@@ -234,7 +235,8 @@ public class DirectWriterCommand<T> implements CommandRunner<Object> {
         60000,
         null,
         ImmutableList.of(),
-        new EndpointsIndex());
+        ImmutableList.of(),
+       null, new EndpointsIndex());
     return oc;
   }
 }

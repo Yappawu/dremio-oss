@@ -16,8 +16,6 @@
 package com.dremio.dac.server.models;
 
 
-import com.dremio.dac.service.admin.VersionInfo;
-
 /**
  * A POJO which represents a server configuration that is injected in a html page and used by UI code
  *
@@ -39,8 +37,11 @@ public class ServerData {
   private final String tdsMimeType;
   private final String whiteLabelUrl;
   private final String clusterId;
-  private final VersionInfo versionInfo;
   private final String edition;
+  private final AnalyzeTools analyzeTools;
+  private final boolean crossSourceDisabled;
+  private final boolean queryBundleUsersEnabled;
+  private final long downloadRecordsLimit;
 
   protected ServerData(Builder builder) {
     this.serverEnvironment = builder.serverEnvironment;
@@ -58,8 +59,11 @@ public class ServerData {
     this.tdsMimeType = builder.tdsMimeType;
     this.whiteLabelUrl = builder.whiteLabelUrl;
     this.clusterId = builder.clusterId;
-    this.versionInfo = builder.versionInfo;
     this.edition = builder.edition;
+    this.analyzeTools = builder.analyzeTools;
+    this.crossSourceDisabled = builder.crossSourceDisabled;
+    this.queryBundleUsersEnabled = builder.queryBundleUsersEnabled;
+    this.downloadRecordsLimit = builder.downloadRecordsLimit;
   }
 
   public String getServerEnvironment() {
@@ -122,12 +126,16 @@ public class ServerData {
     return clusterId;
   }
 
-  public VersionInfo getVersionInfo() {
-    return versionInfo;
-  }
-
   public String getEdition() {
     return edition;
+  }
+
+  public AnalyzeTools getAnalyzeTools() {
+    return analyzeTools;
+  }
+
+  public boolean getQueryBundleUsersEnabled() {
+    return queryBundleUsersEnabled;
   }
 
   public static Builder newBuilder() {
@@ -136,6 +144,14 @@ public class ServerData {
 
   public static Builder newBuilder(Builder builder) {
     return new Builder(builder);
+  }
+
+  public boolean isCrossSourceDisabled() {
+    return crossSourceDisabled;
+  }
+
+  public long getDownloadRecordsLimit() {
+    return downloadRecordsLimit;
   }
 
   /**
@@ -157,11 +173,13 @@ public class ServerData {
     private String tdsMimeType;
     private String whiteLabelUrl;
     private String clusterId;
-    private VersionInfo versionInfo;
     private String edition;
+    private AnalyzeTools analyzeTools;
+    private boolean crossSourceDisabled;
+    private boolean queryBundleUsersEnabled;
+    private long downloadRecordsLimit;
 
     protected Builder() {
-
     }
 
     protected Builder(Builder builder) {
@@ -180,8 +198,11 @@ public class ServerData {
       this.tdsMimeType = builder.tdsMimeType;
       this.whiteLabelUrl = builder.whiteLabelUrl;
       this.clusterId = builder.clusterId;
-      this.versionInfo = builder.versionInfo;
       this.edition = builder.edition;
+      this.analyzeTools = builder.analyzeTools;
+      this.crossSourceDisabled = builder.crossSourceDisabled;
+      this.queryBundleUsersEnabled = builder.queryBundleUsersEnabled;
+      this.downloadRecordsLimit = builder.downloadRecordsLimit;
     }
 
     public Builder setServerEnvironment(String serverEnvironment) {
@@ -259,13 +280,28 @@ public class ServerData {
       return this;
     }
 
-    public Builder setVersionInfo(VersionInfo versionInfo) {
-      this.versionInfo = versionInfo;
+    public Builder setEdition(String edition) {
+      this.edition = edition;
       return this;
     }
 
-    public Builder setEdition(String edition) {
-      this.edition = edition;
+    public Builder setAnalyzeTools(AnalyzeTools analyzeTools) {
+      this.analyzeTools = analyzeTools;
+      return this;
+    }
+
+    public Builder setCrossSourceDisabled(boolean crossSourceDisabled) {
+      this.crossSourceDisabled = crossSourceDisabled;
+      return this;
+    }
+
+    public Builder setQueryBundleUsersEnabled(boolean queryBundleUsersEnabled) {
+      this.queryBundleUsersEnabled = queryBundleUsersEnabled;
+      return this;
+    }
+
+    public Builder setDownloadRecordsLimit(final long downloadRecordsLimit) {
+      this.downloadRecordsLimit = downloadRecordsLimit;
       return this;
     }
 

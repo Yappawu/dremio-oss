@@ -35,6 +35,7 @@ import com.dremio.exec.store.dfs.implicit.CompositeReaderConfig;
 import com.dremio.exec.store.hive.HiveImpersonationUtil;
 import com.dremio.exec.store.hive.Hive3StoragePlugin;
 import com.dremio.exec.store.hive.proxy.HiveProxiedScanBatchCreator;
+import com.dremio.exec.store.parquet.RecordReaderIterator;
 import com.dremio.exec.util.ConcatenatedCloseableIterator;
 import com.dremio.hive.proto.HiveReaderProto;
 import com.dremio.hive.proto.HiveReaderProto.HiveTableXattr;
@@ -111,14 +112,14 @@ public class HiveScanBatchCreator implements HiveProxiedScanBatchCreator {
 
     final UserGroupInformation proxyUgi = getUGI(storagePlugin, config);
 
-    final CompositeReaderConfig compositeConfig = CompositeReaderConfig.getCompound(config.getFullSchema(), config.getColumns(), config.getPartitionColumns());
+    final CompositeReaderConfig compositeConfig = CompositeReaderConfig.getCompound(context, config.getFullSchema(), config.getColumns(), config.getPartitionColumns());
 
     final boolean isPartitioned = config.getPartitionColumns() != null && config.getPartitionColumns().size() > 0;
     List<SplitAndPartitionInfo> parquetSplits = new ArrayList<>();
     List<SplitAndPartitionInfo> nonParquetSplits = new ArrayList<>();
     classifySplitsAsParquetAndNonParquet(config.getSplits(), tableXattr, isPartitioned, parquetSplits, nonParquetSplits);
 
-    Iterator<RecordReader> recordReaders = ConcatenatedCloseableIterator.of(
+    RecordReaderIterator recordReaders = RecordReaderIterator.join(
         Objects.requireNonNull(ScanWithDremioReader.createReaders(conf, storagePlugin, fragmentExecContext, context,
             config, tableXattr, compositeConfig, proxyUgi, parquetSplits)),
         Objects.requireNonNull(ScanWithHiveReader.createReaders(conf, fragmentExecContext, context,

@@ -15,7 +15,12 @@
  */
 package com.dremio.sabot.op.join.vhash;
 
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+
+import com.dremio.exec.util.BloomFilter;
+import com.dremio.exec.util.ValueListFilter;
 
 public interface JoinTable extends AutoCloseable {
   public void insert(final long outputAddr, final int records);
@@ -44,4 +49,30 @@ public interface JoinTable extends AutoCloseable {
   public String traceReport();
   public long getBuildHashComputationTime(TimeUnit unit);
   public long getProbeHashComputationTime(TimeUnit unit);
+
+  /**
+   * Prepares a bloomfilter from the selective field keys. Since this is an optimisation, errors are not propagated to
+   * the consumer. Instead, they get an empty optional.
+   * @param fieldNames
+   * @param sizeDynamically Size the filter according to the number of entries in table.
+   * @return
+   */
+  default Optional<BloomFilter> prepareBloomFilter(List<String> fieldNames, boolean sizeDynamically) {
+    return Optional.empty();
+  }
+
+  /**
+   * Returns distinct keys for a given field. In case of composite keys, this method can be used to get distinct values
+   * for a given join field. Returns empty if number of distinct keys are more than max elements or if there is an
+   * error while processing keys.
+   *
+   * Primarily used for Runtime Filtering at Joins
+   *
+   * @param fieldName
+   * @param maxElements
+   * @return
+   */
+  default Optional<ValueListFilter> prepareValueListFilter(String fieldName, int maxElements) {
+    return Optional.empty();
+  }
 }

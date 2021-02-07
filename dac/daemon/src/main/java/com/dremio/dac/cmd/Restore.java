@@ -17,6 +17,7 @@ package com.dremio.dac.cmd;
 
 import static com.dremio.dac.service.search.SearchIndexManager.CONFIG_KEY;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.apache.hadoop.conf.Configuration;
@@ -27,8 +28,7 @@ import com.beust.jcommander.ParameterException;
 import com.beust.jcommander.Parameters;
 import com.dremio.dac.server.DACConfig;
 import com.dremio.dac.util.BackupRestoreUtil;
-import com.dremio.dac.util.BackupRestoreUtil.BackupStats;
-import com.dremio.datastore.api.LegacyKVStoreProvider;
+import com.dremio.datastore.LocalKVStoreProvider;
 import com.dremio.exec.hadoop.HadoopFileSystem;
 import com.dremio.io.file.FileSystem;
 import com.dremio.io.file.Path;
@@ -78,29 +78,51 @@ public class Restore {
     }
   }
 
-  public static void main(String[] args) {
+  public static void main(String[] args) throws Exception {
     final DACConfig dacConfig = DACConfig.newConfig();
     final BackupManagerOptions options = BackupManagerOptions.parse(args);
+    if (!dacConfig.isMaster) {
+      AdminLogger.log("Restore should be run on master node");
+      System.exit(1);
+    }
+
+    Path backupDir = Path.of(options.backupDir);
+    FileSystem fs = HadoopFileSystem.get(backupDir, new Configuration());
     try {
-      if (!dacConfig.isMaster) {
-        throw new UnsupportedOperationException("Restore should be run on master node ");
+      BackupRestoreUtil.RestorationResults restorationResults =
+        BackupRestoreUtil.restore(fs, backupDir, dacConfig);
+      String backupPath = restorationResults.getStats().getBackupPath();
+      long numTables = restorationResults.getStats().getTables();
+
+      AdminLogger.log("Restored from backup at {}, {} dremio tables, {} uploaded files.",
+        backupPath, numTables, restorationResults.getStats().getFiles());
+      List<Exception> perFileExceptions = restorationResults.getExceptions();
+      if (!perFileExceptions.isEmpty()) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("Per file exceptions:\n");
+        for (Exception e : perFileExceptions) {
+          builder.append(e.getMessage()).append("\n");
+        }
+        AdminLogger.log(builder.toString());
+        System.exit(1);
       }
-      Path backupDir = Path.of(options.backupDir);
-      FileSystem fs = HadoopFileSystem.get(backupDir, new Configuration());
-      BackupStats backupStats =  BackupRestoreUtil.restore(fs, backupDir, dacConfig);
-      final Optional<LegacyKVStoreProvider> providerOptional = CmdUtils.getLegacyKVStoreProvider(dacConfig.getConfig());
-      // clear searchLastRefresh so that search index can be rebuilt after restore
-      try (LegacyKVStoreProvider provider = providerOptional.get()) {
+    } catch (Exception e) {
+      AdminLogger.log("Restore failed. Please make sure the backup is compatible with this version.", e);
+      System.exit(1);
+    }
+
+    final Optional<LocalKVStoreProvider> providerOptional = CmdUtils.getKVStoreProvider(dacConfig.getConfig());
+    // clear searchLastRefresh so that search index can be rebuilt after restore
+    if (providerOptional.isPresent()) {
+      try (LocalKVStoreProvider provider = providerOptional.get()) {
         provider.start();
-        final ConfigurationStore configStore = new ConfigurationStore(provider);
+        final ConfigurationStore configStore = new ConfigurationStore(provider.asLegacy());
         configStore.delete(CONFIG_KEY);
       } catch (Exception e) {
         AdminLogger.log("Failed to clear catalog search index.", e);
+        System.exit(1);
       }
-      AdminLogger.log("Restored from backup at {}, dremio tables {}, uploaded files {}", backupStats.getBackupPath(), backupStats.getTables(), backupStats.getFiles());
-    } catch (Exception e) {
-      AdminLogger.log("Restore failed", e);
-      System.exit(1);
     }
   }
+
 }

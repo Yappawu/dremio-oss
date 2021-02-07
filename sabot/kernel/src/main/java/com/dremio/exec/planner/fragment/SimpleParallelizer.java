@@ -19,11 +19,15 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
+import com.dremio.common.nodes.EndpointHelper;
 import com.dremio.common.util.DremioStringUtils;
 import com.dremio.exec.ExecConstants;
 import com.dremio.exec.expr.fn.FunctionLookupContext;
@@ -42,6 +46,7 @@ import com.dremio.exec.proto.CoordExecRPC;
 import com.dremio.exec.proto.CoordExecRPC.Collector;
 import com.dremio.exec.proto.CoordExecRPC.FragmentAssignment;
 import com.dremio.exec.proto.CoordExecRPC.FragmentCodec;
+import com.dremio.exec.proto.CoordExecRPC.MajorFragmentAssignment;
 import com.dremio.exec.proto.CoordExecRPC.MinorAttr;
 import com.dremio.exec.proto.CoordExecRPC.PlanFragmentMajor;
 import com.dremio.exec.proto.CoordExecRPC.PlanFragmentMinor;
@@ -53,14 +58,15 @@ import com.dremio.exec.work.QueryWorkUnit;
 import com.dremio.exec.work.foreman.ForemanSetupException;
 import com.dremio.options.OptionList;
 import com.dremio.options.OptionManager;
+import com.dremio.resource.GroupResourceInformation;
 import com.dremio.resource.ResourceSchedulingDecisionInfo;
+import com.dremio.resource.SelectedExecutorsResourceInformation;
 import com.dremio.sabot.op.aggregate.vectorized.VectorizedHashAggOperator;
 import com.dremio.sabot.op.sort.external.ExternalSortOperator;
 import com.dremio.sabot.rpc.user.UserSession;
 import com.dremio.service.Pointer;
 import com.dremio.service.execselector.ExecutorSelectionContext;
 import com.dremio.service.execselector.ExecutorSelectionHandle;
-import com.dremio.service.execselector.ExecutorSelectionHandleImpl;
 import com.dremio.service.execselector.ExecutorSelectionService;
 import com.dremio.service.execselector.ExecutorSelectionUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -84,7 +90,7 @@ public class SimpleParallelizer implements ParallelizationParameters {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(SimpleParallelizer.class);
 
   private final long parallelizationThreshold;
-  private final int maxWidthPerNode;
+  private int maxWidthPerNode;
   private final int maxGlobalWidth;
   private final double affinityFactor;
   private final boolean useNewAssignmentCreator;
@@ -96,34 +102,22 @@ public class SimpleParallelizer implements ParallelizationParameters {
   private final ResourceSchedulingDecisionInfo resourceSchedulingDecisionInfo;
   private ExecutorSelectionService executorSelectionService;  // NB: re-assigned in unit tests, hence not final
   private final int targetNumFragsPerNode;
+  private final boolean shouldIgnoreLeafAffinity;
 
   public SimpleParallelizer(QueryContext context, MaestroObserver observer, ExecutorSelectionService executorSelectionService) {
-    this(context, observer, executorSelectionService, null);
+    this(context, observer, executorSelectionService, null, context.getGroupResourceInformation());
   }
 
   public SimpleParallelizer(QueryContext context,
                             MaestroObserver observer,
                             ExecutorSelectionService executorSelectionService,
-                            ResourceSchedulingDecisionInfo resourceSchedulingDecisionInfo) {
+                            ResourceSchedulingDecisionInfo resourceSchedulingDecisionInfo,
+                            GroupResourceInformation groupResourceInformation) {
     this.queryContext = context;
     this.resourceSchedulingDecisionInfo = resourceSchedulingDecisionInfo;
     OptionManager optionManager = context.getOptions();
     long sliceTarget = context.getPlannerSettings().getSliceTarget();
     this.parallelizationThreshold = sliceTarget > 0 ? sliceTarget : 1;
-
-    final long configuredMaxWidthPerNode = context.getClusterResourceInformation().getAverageExecutorCores(optionManager);
-    if (configuredMaxWidthPerNode == 0) {
-      ExecutorSelectionUtils.throwEngineOffline(resourceSchedulingDecisionInfo.getQueueTag());
-    }
-    final double maxWidthFactor = context.getWorkStatsProvider().get().getMaxWidthFactor();
-    this.maxWidthPerNode = (int) Math.max(1, configuredMaxWidthPerNode * maxWidthFactor);
-
-    if (logger.isDebugEnabled() && maxWidthFactor < 1) {
-      final float clusterLoad = context.getWorkStatsProvider().get().getClusterLoad();
-      logger.debug("Cluster load {} exceeded cutoff, max_width_factor = {}. current max_width = {}",
-        clusterLoad, maxWidthFactor, this.maxWidthPerNode);
-    }
-    this.executionMap = new ExecutionNodeMap(context.getActiveEndpoints());
     this.maxGlobalWidth = (int) optionManager.getOption(ExecConstants.MAX_WIDTH_GLOBAL);
     this.affinityFactor = optionManager.getOption(ExecConstants.AFFINITY_FACTOR);
     this.useNewAssignmentCreator = !optionManager.getOption(ExecConstants.OLD_ASSIGNMENT_CREATOR);
@@ -132,6 +126,25 @@ public class SimpleParallelizer implements ParallelizationParameters {
     this.fragmentCodec = FragmentCodec.valueOf(optionManager.getOption(ExecConstants.FRAGMENT_CODEC).toUpperCase());
     this.executorSelectionService = executorSelectionService;
     this.targetNumFragsPerNode = Ints.saturatedCast(optionManager.getOption(ExecutorSelectionService.TARGET_NUM_FRAGS_PER_NODE));
+    this.shouldIgnoreLeafAffinity = optionManager.getOption(ExecConstants.SHOULD_IGNORE_LEAF_AFFINITY);
+    final ExecutorSelectionHandle handle = executorSelectionService.getAllActiveExecutors(new ExecutorSelectionContext(resourceSchedulingDecisionInfo));
+    this.executionMap = new ExecutionNodeMap(handle.getExecutors());
+    computeMaxWidthPerNode(groupResourceInformation);
+  }
+
+  private void computeMaxWidthPerNode(GroupResourceInformation groupResourceInformation) {
+    OptionManager optionManager = queryContext.getOptions();
+      final long configuredMaxWidthPerNode = groupResourceInformation.getAverageExecutorCores(optionManager);
+      if (configuredMaxWidthPerNode == 0) {
+        ExecutorSelectionUtils.throwEngineOffline(resourceSchedulingDecisionInfo.getQueueTag());
+      }
+      final double maxWidthFactor = queryContext.getWorkStatsProvider().get().getMaxWidthFactor(groupResourceInformation);
+      maxWidthPerNode = (int) Math.max(1, configuredMaxWidthPerNode * maxWidthFactor);
+    if (logger.isDebugEnabled() && maxWidthFactor < 1) {
+      final float clusterLoad = queryContext.getWorkStatsProvider().get().getClusterLoad();
+      logger.debug("Cluster load {} exceeded cutoff, max_width_factor = {}. current max_width = {}",
+        clusterLoad, maxWidthFactor, maxWidthPerNode);
+    }
   }
 
   @VisibleForTesting
@@ -141,7 +154,8 @@ public class SimpleParallelizer implements ParallelizationParameters {
                             double affinityFactor,
                             MaestroObserver observer,
                             boolean useNewAssignmentCreator,
-                            double assignmentCreatorBalanceFactor) {
+                            double assignmentCreatorBalanceFactor,
+                            boolean shouldIgnoreLeafAffinity) {
     this.executionMap = new ExecutionNodeMap(Collections.<NodeEndpoint>emptyList());
     this.parallelizationThreshold = parallelizationThreshold;
     this.maxWidthPerNode = maxWidthPerNode;
@@ -154,6 +168,7 @@ public class SimpleParallelizer implements ParallelizationParameters {
     this.queryContext = null;
     this.targetNumFragsPerNode = 1;
     this.resourceSchedulingDecisionInfo = null;
+    this.shouldIgnoreLeafAffinity = shouldIgnoreLeafAffinity;
   }
 
   @Override
@@ -186,6 +201,11 @@ public class SimpleParallelizer implements ParallelizationParameters {
     return assignmentCreatorBalanceFactor;
   }
 
+  @Override
+  public boolean shouldIgnoreLeafAffinity() {
+    return shouldIgnoreLeafAffinity;
+  }
+
   /**
    * Generate a set of assigned fragments based on the provided fragment tree. Do not allow parallelization stages
    * to go beyond the global max width.
@@ -214,7 +234,8 @@ public class SimpleParallelizer implements ParallelizationParameters {
     observer.planParallelStart();
     final Stopwatch stopwatch = Stopwatch.createStarted();
     // NB: OK to close resources in unit tests only
-    try (final ExecutionPlanningResources resources = getFragmentsHelper(rootFragment)) {
+    try (final ExecutionPlanningResources resources = getExecutionPlanningResources(queryContext, observer, executorSelectionService,
+      resourceSchedulingDecisionInfo, rootFragment)) {
       observer.planParallelized(resources.getPlanningSet());
       stopwatch.stop();
       observer.planAssignmentTime(stopwatch.elapsed(TimeUnit.MILLISECONDS));
@@ -262,48 +283,62 @@ public class SimpleParallelizer implements ParallelizationParameters {
   }
 
   /**
-   * Helper method to reuse the code for QueryWorkUnit(s) generation
+   * Select executors, parallelize fragments and get the planning resources.
+   *
+   * @
    * @param rootFragment
    * @return
-   * @throws ExecutionSetupException
    */
-  public ExecutionPlanningResources getFragmentsHelper(Fragment rootFragment) throws ExecutionSetupException {
+
+
+  public static ExecutionPlanningResources getExecutionPlanningResources(QueryContext context,
+                                                                         MaestroObserver observer,
+                                                                         ExecutorSelectionService executorSelectionService,
+                                                                         ResourceSchedulingDecisionInfo resourceSchedulingDecisionInfo,
+                                                                         Fragment rootFragment) throws ExecutionSetupException {
+    SimpleParallelizer parallelizer = new SimpleParallelizer(context, observer, executorSelectionService, resourceSchedulingDecisionInfo, context.getGroupResourceInformation());
     PlanningSet planningSet = new PlanningSet();
-
-    initFragmentWrappers(rootFragment, planningSet);
-
+    parallelizer.initFragmentWrappers(rootFragment, planningSet);
     final Set<Wrapper> leafFragments = constructFragmentDependencyGraph(planningSet);
     // NB: for queries with hard affinity, we need to use all endpoints, so the parallelizer, below, is given an
     //     opportunity to find the nodes that match said affinity
+    // Start parallelizing from leaf fragments
     Pointer<Boolean> hasHardAffinity = new Pointer<>(false);
 
-    // Start parallelizing from leaf fragments
+    // Start parallelizing from the leaf fragments.
+
     int idealNumFragments = 0;
     for (Wrapper wrapper : leafFragments) {
-      idealNumFragments += computePhaseStats(wrapper, planningSet, hasHardAffinity);
+      idealNumFragments += parallelizer.computePhaseStats(wrapper, planningSet, hasHardAffinity);
     }
-    int idealNumNodes = IntMath.divide(idealNumFragments, targetNumFragsPerNode, RoundingMode.CEILING);
-    final Stopwatch stopwatch = Stopwatch.createStarted();
-    final ExecutorSelectionHandle handle = hasHardAffinity.value
-        ? new ExecutorSelectionHandleImpl(queryContext.getActiveEndpoints())
-        : executorSelectionService.getExecutors(idealNumNodes, new ExecutorSelectionContext(resourceSchedulingDecisionInfo));
-    final ExecutionPlanningResources executionPlanningResources = new ExecutionPlanningResources(planningSet, handle);
-    final Collection<NodeEndpoint> selectedEndpoints = handle.getExecutors();
-    stopwatch.stop();
-    observer.executorsSelected(stopwatch.elapsed(TimeUnit.MILLISECONDS),
-        idealNumFragments, idealNumNodes, selectedEndpoints.size(),
-        handle.getPlanDetails());
-    if (selectedEndpoints.isEmpty()){
+    int idealNumNodes = IntMath.divide(idealNumFragments, parallelizer.targetNumFragsPerNode, RoundingMode.CEILING);
+    final Stopwatch stopWatch = Stopwatch.createStarted();
+    ExecutorSelectionContext executorContext = new ExecutorSelectionContext(resourceSchedulingDecisionInfo);
+    ExecutorSelectionHandle executorSelectionHandle = hasHardAffinity.value
+      ? executorSelectionService.getAllActiveExecutors(executorContext)
+      : executorSelectionService.getExecutors(idealNumNodes, executorContext);
+
+    GroupResourceInformation groupResourceInformation = new SelectedExecutorsResourceInformation(executorSelectionHandle.getExecutors());
+    parallelizer.computeMaxWidthPerNode(groupResourceInformation);
+
+    final ExecutionPlanningResources executionPlanningResources = new ExecutionPlanningResources(planningSet, executorSelectionHandle, groupResourceInformation);
+    final Collection<NodeEndpoint> selectedEndpoints = executorSelectionHandle.getExecutors();
+    stopWatch.stop();
+    observer.executorsSelected(stopWatch.elapsed(TimeUnit.MILLISECONDS),
+      idealNumFragments, idealNumNodes, selectedEndpoints.size(),
+      executorSelectionHandle.getPlanDetails() +
+        " selectedEndpoints: " + EndpointHelper.getMinimalString(selectedEndpoints) +
+        " hardAffinity: " + hasHardAffinity.value);
+    if (selectedEndpoints.isEmpty()) {
       ExecutorSelectionUtils.throwEngineOffline(resourceSchedulingDecisionInfo.getQueueTag());
     }
 
     for (Wrapper wrapper : leafFragments) {
-      parallelizePhase(wrapper, planningSet, selectedEndpoints);
+      parallelizer.parallelizePhase(wrapper, planningSet, selectedEndpoints);
     }
 
     return executionPlanningResources;
   }
-
 
   // For every fragment, create a Wrapper in PlanningSet.
   @VisibleForTesting
@@ -465,7 +500,7 @@ public class SimpleParallelizer implements ParallelizationParameters {
 
     final List<PlanFragmentFull> fragments = Lists.newArrayList();
     EndpointsIndex.Builder builder = indexBuilder.getEndpointsIndexBuilder();
-
+    MajorFragmentAssignmentCache majorFragmentAssignmentsCache = new MajorFragmentAssignmentCache();
     // now we generate all the individual plan fragments and associated assignments. Note, we need all endpoints
     // assigned before we can materialize, so we start a new loop here rather than utilizing the previous one.
     for (Wrapper wrapper : planningSet) {
@@ -510,10 +545,12 @@ public class SimpleParallelizer implements ParallelizationParameters {
       // Create a minorFragment for each major fragment.
       PlanFragmentMajor major = null;
       boolean majorAdded = false;
+      // Create a minorFragment for each major fragment.
       for (int minorFragmentId = 0; minorFragmentId < wrapper.getWidth(); minorFragmentId++) {
         IndexedFragmentNode iNode = new IndexedFragmentNode(minorFragmentId, wrapper);
         wrapper.resetAllocation();
         PhysicalOperator op = physicalOperatorRoot.accept(new Materializer(wrapper.getSplitSets(), builder), iNode);
+
         Preconditions.checkArgument(op instanceof FragmentRoot);
         FragmentRoot root = (FragmentRoot) op;
 
@@ -539,6 +576,11 @@ public class SimpleParallelizer implements ParallelizationParameters {
             throw new ForemanSetupException("Failure while trying to convert fragment into json.", e);
           }
 
+          // If any of the operators report ext communicable fragments, fill in the assignment and node details.
+          final Set<Integer> extCommunicableMajorFragments = physicalOperatorRoot.accept(new ExtCommunicableFragmentCollector(), wrapper);
+          majorFragmentAssignmentsCache.populateIfAbsent(planningSet, builder, extCommunicableMajorFragments);
+          final List<MajorFragmentAssignment> extFragmentAssignments =
+                  majorFragmentAssignmentsCache.getAssignments(planningSet, builder, extCommunicableMajorFragments);
           major =
               PlanFragmentMajor.newBuilder()
                   .setForeman(foremanNode)
@@ -552,6 +594,7 @@ public class SimpleParallelizer implements ParallelizationParameters {
                   .setPriority(queryContextInfo.getPriority())
                   .setFragmentCodec(fragmentCodec)
                   .addAllAllAssignment(assignments)
+                  .addAllExtFragmentAssignments(extFragmentAssignments)
                   .build();
 
           if (logger.isTraceEnabled()) {
@@ -632,5 +675,45 @@ public class SimpleParallelizer implements ParallelizationParameters {
   @VisibleForTesting
   public void setExecutorSelectionService(ExecutorSelectionService executorSelectionService) {
     this.executorSelectionService = executorSelectionService;
+  }
+
+  private class MajorFragmentAssignmentCache {
+    private final Map<Integer, MajorFragmentAssignment> majorFragmentAssignments = new HashMap<>();
+
+    private List<MajorFragmentAssignment> getAssignments(final PlanningSet planningSet,
+                                                         final EndpointsIndex.Builder builder,
+                                                         final Set<Integer> requiredFragments) {
+      populateIfAbsent(planningSet, builder, requiredFragments);
+      return requiredFragments.stream().map(majorFragmentAssignments::get).collect(Collectors.toList());
+    }
+
+    private void populateIfAbsent(final PlanningSet planningSet,
+                                  final EndpointsIndex.Builder builder,
+                                  final Set<Integer> requiredFragments) {
+      if (requiredFragments.isEmpty()) {
+        return;
+      }
+      if (majorFragmentAssignments.keySet().containsAll(requiredFragments)) {
+        return;
+      }
+      for (Wrapper wrapper : planningSet) {
+        final int majorFragment = wrapper.getMajorFragmentId();
+        if (!requiredFragments.contains(majorFragment) || majorFragmentAssignments.containsKey(majorFragment)) {
+          continue;
+        }
+        final ArrayListMultimap<Integer, Integer> assignMap = ArrayListMultimap.create();
+        for (int minorFragmentId = 0; minorFragmentId < wrapper.getWidth(); minorFragmentId++) {
+          assignMap.put(builder.addNodeEndpoint(wrapper.getAssignedEndpoint(minorFragmentId)), minorFragmentId);
+        }
+
+        // create getAssignment lists.
+        final List<FragmentAssignment> assignments = assignMap.keySet().stream()
+                .map(ep -> FragmentAssignment.newBuilder().setAssignmentIndex(ep).addAllMinorFragmentId(assignMap.get(ep)).build())
+                .collect(Collectors.toList());
+
+        majorFragmentAssignments.putIfAbsent(majorFragment, MajorFragmentAssignment.newBuilder()
+                .setMajorFragmentId(majorFragment).addAllAllAssignment(assignments).build());
+      }
+    }
   }
 }

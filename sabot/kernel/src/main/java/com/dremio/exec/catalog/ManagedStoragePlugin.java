@@ -49,6 +49,7 @@ import com.dremio.connector.metadata.EntityPath;
 import com.dremio.connector.metadata.SourceMetadata;
 import com.dremio.connector.metadata.extensions.SupportsAlteringDatasetMetadata;
 import com.dremio.datastore.api.LegacyKVStore;
+import com.dremio.exec.catalog.CatalogInternalRPC.UpdateLastRefreshDateRequest;
 import com.dremio.exec.catalog.CatalogServiceImpl.UpdateType;
 import com.dremio.exec.catalog.DatasetCatalog.UpdateStatus;
 import com.dremio.exec.catalog.conf.ConnectionConf;
@@ -74,7 +75,7 @@ import com.dremio.service.namespace.dataset.proto.DatasetConfig;
 import com.dremio.service.namespace.source.proto.MetadataPolicy;
 import com.dremio.service.namespace.source.proto.SourceConfig;
 import com.dremio.service.namespace.source.proto.SourceInternalData;
-import com.dremio.service.scheduler.SchedulerService;
+import com.dremio.service.scheduler.ModifiableSchedulerService;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -116,7 +117,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
   private final CatalogServiceMonitor monitor;
   private final NamespaceService systemUserNamespaceService;
 
-  private volatile SourceConfig sourceConfig;
+  protected volatile SourceConfig sourceConfig;
   private volatile StoragePlugin plugin;
   private volatile MetadataPolicy metadataPolicy;
   private volatile StoragePluginId pluginId;
@@ -135,13 +136,15 @@ public class ManagedStoragePlugin implements AutoCloseable {
       SabotContext context,
       Executor executor,
       boolean isMaster,
-      SchedulerService scheduler,
+      ModifiableSchedulerService modifiableScheduler,
       NamespaceService systemUserNamespaceService,
       LegacyKVStore<NamespaceKey, SourceInternalData> sourceDataStore,
       SourceConfig sourceConfig,
       OptionManager options,
       ConnectionReader reader,
-      CatalogServiceMonitor monitor) {
+      CatalogServiceMonitor monitor,
+      Provider<MetadataRefreshInfoBroadcaster> broadcasterProvider
+  ) {
     this.rwlock = new ReentrantReadWriteLock(true);
     this.executor = executor;
     this.readLock = rwlock.readLock();
@@ -154,8 +157,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
     this.conf = reader.getConnectionConf(sourceConfig);
     this.plugin = conf.newPlugin(context, sourceConfig.getName(), this::getId);
     this.metadataPolicy = sourceConfig.getMetadataPolicy() == null ? CatalogService.NEVER_REFRESH_POLICY : sourceConfig.getMetadataPolicy();
-    final Provider<Long> authTtlProvider = () -> ManagedStoragePlugin.this.metadataPolicy.getAuthTtlMs();
-    this.permissionsCache = new PermissionCheckCache(() -> plugin, authTtlProvider, 2500);
+    this.permissionsCache = new PermissionCheckCache(this::getPlugin, () -> getMetadataPolicy().getAuthTtlMs(), 2500);
     this.options = options;
     this.reader = reader;
     this.monitor = monitor;
@@ -164,19 +166,33 @@ public class ManagedStoragePlugin implements AutoCloseable {
     // leaks this so do last.
     this.metadataManager = new SourceMetadataManager(
         sourceKey,
-        scheduler,
+        modifiableScheduler,
         isMaster,
         sourceDataStore,
         new MetadataBridge(),
         options,
-        monitor);
+        monitor,
+        broadcasterProvider);
   }
 
-  private AutoCloseableLock readLock() {
+  protected PermissionCheckCache getPermissionsCache() {
+    return permissionsCache;
+  }
+
+  protected StoragePlugin getPlugin() {
+    return plugin;
+  }
+
+  protected MetadataPolicy getMetadataPolicy() {
+    return metadataPolicy;
+  }
+
+  protected AutoCloseableLock readLock() {
     return AutoCloseableLock.lockAndWrap(readLock, true);
   }
 
-  private AutoCloseableLock writeLock() {
+  @VisibleForTesting
+  protected AutoCloseableLock writeLock() {
     return AutoCloseableLock.lockAndWrap(writeLock, true);
   }
 
@@ -284,7 +300,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
 
       userNamespace.canSourceConfigBeSaved(config, existingConfig, attributes);
 
-      // if config can be saved we can set the oridinal
+      // if config can be saved we can set the ordinal
       config.setConfigOrdinal(existingConfig.getConfigOrdinal());
     } catch (NamespaceNotFoundException ex) {
       if (config.getTag() != null) {
@@ -373,9 +389,17 @@ public class ManagedStoragePlugin implements AutoCloseable {
       logger.debug("Source added [{}], took {} milliseconds", config.getName(), stopwatchForPlugin.elapsed(TimeUnit.MILLISECONDS));
 
     } catch (ConcurrentModificationException ex) {
-      throw UserException.concurrentModificationError(ex).message("Failure creating/updating source [%s].", config.getName()).build(logger);
+      throw UserException.concurrentModificationError(ex).message(
+          "Source update failed due to a concurrent update. Please try again [%s].", config.getName()).build(logger);
     } catch (Exception ex) {
-      throw UserException.validationError(ex).message("Failure creating/updating source [%s].", config.getName()).addContext(ex.getMessage()).build(logger);
+      String suggestedUserAction = getState().getSuggestedUserAction();
+      if (suggestedUserAction == null || suggestedUserAction.isEmpty()) {
+        // If no user action was suggested, fall back to a basic message.
+        suggestedUserAction = String.format("Failure creating/updating this source [%s].", config.getName());
+      }
+      throw UserException.validationError(ex)
+        .message(suggestedUserAction)
+        .build(logger);
     }
   }
 
@@ -478,15 +502,19 @@ public class ManagedStoragePlugin implements AutoCloseable {
    * @return A future that returns the state of this plugin once started (or throws Exception if the startup failed).
    */
   CompletableFuture<SourceState> startAsync() {
-    return startAsync(sourceConfig);
+    return startAsync(sourceConfig, true);
   }
 
   /**
    * Generate a supplier that produces source state
    * @param config
+   * @param closeMetaDataManager - During dremio startup, we don't close metadataManager when sources are in bad state,
+   *                             because we need state refresh for bad sources.
+   *                             When a user tries to add a source and it's in bad state, we close metadataManager to avoid
+   *                             wasting additional space.
    * @return
    */
-  private Supplier<SourceState> newStartSupplier(SourceConfig config) {
+  private Supplier<SourceState> newStartSupplier(SourceConfig config, final boolean closeMetaDataManager) {
     try {
       return nameSupplier("start-" + sourceConfig.getName(), () -> {
         try {
@@ -510,7 +538,11 @@ public class ManagedStoragePlugin implements AutoCloseable {
 
           try {
             // failed to startup, make sure to close.
-            plugin.close();
+            if (closeMetaDataManager) {
+              AutoCloseables.close(metadataManager, plugin);
+            } else {
+              plugin.close();
+            }
             plugin = null;
           } catch (Exception ex) {
             e.addSuppressed(new RuntimeException("Cleanup exception after initial failure.", ex));
@@ -530,10 +562,10 @@ public class ManagedStoragePlugin implements AutoCloseable {
    * @param config The configuration to use for this startup.
    * @return A future that returns the state of this plugin once started (or throws Exception if the startup failed).
    */
-  private CompletableFuture<SourceState> startAsync(final SourceConfig config) {
+  private CompletableFuture<SourceState> startAsync(final SourceConfig config, final boolean isDuringStartUp) {
     // we run this in a separate thread to allow early timeout. This doesn't use the scheduler since that is
     // bound and we're frequently holding a lock when running this.
-    return CompletableFuture.supplyAsync(newStartSupplier(config), executor);
+    return CompletableFuture.supplyAsync(newStartSupplier(config, !isDuringStartUp), executor);
   }
 
   /**
@@ -603,12 +635,16 @@ public class ManagedStoragePlugin implements AutoCloseable {
       if (oldDatasetMetadata == newDatasetMetadata) {
         changed = false;
       } else {
-        MetadataObjectsUtils.overrideExtended(datasetConfig, newDatasetMetadata, Optional.empty(), getMaxMetadataColumns());
-        systemUserNamespaceService.addOrUpdateDataset(key, datasetConfig);
-        refreshDataset(key, getDefaultRetrievalOptions());
+        Preconditions.checkState(newDatasetMetadata.getDatasetStats().getRecordCount() >= 0,
+          "Record count should already be filled in when altering dataset metadata.");
+        MetadataObjectsUtils.overrideExtended(datasetConfig, newDatasetMetadata, Optional.empty(),
+                newDatasetMetadata.getDatasetStats().getRecordCount(), getMaxMetadataColumns());
+        //systemUserNamespaceService.addOrUpdateDataset(key, datasetConfig);
+        // Force a full refresh
+        saveDatasetAndMetadataInNamespace(datasetConfig, handle.get(), retrievalOptions.toBuilder().setForceUpdate(true).build());
         changed = true;
       }
-    } catch (ConnectorException | NamespaceException e) {
+    } catch (ConnectorException e) {
       throw UserException.validationError(e)
                          .buildSilently();
     }
@@ -658,11 +694,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
   /**
    * Before doing any operation associated with plugin, we should check the state of the plugin.
    */
-  private void checkState() {
-    if(!options.getOption(CatalogOptions.STORAGE_PLUGIN_CHECK_STATE)) {
-      return;
-    }
-
+  protected void checkState() {
     try(AutoCloseableLock l = readLock()) {
       SourceState state = this.state;
       if(state.getStatus() == SourceState.SourceStatus.bad) {
@@ -688,14 +720,24 @@ public class ManagedStoragePlugin implements AutoCloseable {
   }
 
   @VisibleForTesting
-  long getLastFullRefreshDateMs() {
+  public long getLastFullRefreshDateMs() {
     return metadataManager.getLastFullRefreshDateMs();
+  }
+
+  @VisibleForTesting
+  public long getLastNamesRefreshDateMs() {
+    return metadataManager.getLastNamesRefreshDateMs();
+  }
+
+  void setMetadataSyncInfo(UpdateLastRefreshDateRequest request) {
+    metadataManager.setMetadataSyncInfo(request);
   }
 
   private static boolean isComplete(DatasetConfig config) {
     return config != null
         && DatasetHelper.getSchemaBytes(config) != null
-        && config.getReadDefinition() != null;
+        && config.getReadDefinition() != null
+        && config.getReadDefinition().getSplitVersion() != null;
   }
 
   public static enum MetadataAccessType {
@@ -707,7 +749,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
   public void checkAccess(NamespaceKey key, DatasetConfig datasetConfig, String userName, final MetadataRequestOptions options) {
     try(AutoCloseableLock l = readLock()) {
       checkState();
-      if (!permissionsCache.hasAccess(userName, key, datasetConfig, options.getStatsCollector())) {
+      if (!getPermissionsCache().hasAccess(userName, key, datasetConfig, options.getStatsCollector(), sourceConfig)) {
         throw UserException.permissionError()
           .message("Access denied reading dataset %s.", key)
           .build(logger);
@@ -738,6 +780,24 @@ public class ManagedStoragePlugin implements AutoCloseable {
       throw UserException.validationError(e).message("Storage plugin was changing during refresh attempt.").build(logger);
     } catch (ConnectorException | NamespaceException e) {
       throw UserException.validationError(e).message("Unable to refresh dataset.").build(logger);
+    }
+  }
+
+  public void saveDatasetAndMetadataInNamespace(DatasetConfig datasetConfig,
+                                                DatasetHandle datasetHandle,
+                                                DatasetRetrievalOptions retrievalOptions
+  ) {
+    try (AutoCloseableLock l = readLock()) {
+      checkState();
+      metadataManager.saveDatasetAndMetadataInNamespace(datasetConfig, datasetHandle, retrievalOptions);
+    } catch (StoragePluginChanging e) {
+      throw UserException.validationError(e)
+        .message("Storage plugin was changing during dataset update attempt.")
+        .build(logger);
+    } catch (ConnectorException e) {
+      throw UserException.validationError(e)
+        .message("Unable to update dataset.")
+        .build(logger);
     }
   }
 
@@ -813,7 +873,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
                 continue;
               }
               plugin = conf.newPlugin(context, sourceConfig.getName(), this::getId);
-              return newStartSupplier(sourceConfig).get();
+              return newStartSupplier(sourceConfig, false).get();
             }
           }
 
@@ -881,7 +941,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
     this.plugin = newConnectionConf.newPlugin(context, sourceKey.getRoot(), this::getId);
     try {
       logger.trace("Starting new plugin for [{}]", config.getName());
-      startAsync(config).get(waitMillis, TimeUnit.MILLISECONDS);
+      startAsync(config, false).get(waitMillis, TimeUnit.MILLISECONDS);
       try {
         AutoCloseables.close(oldPlugin);
       }catch(Exception ex) {
@@ -889,7 +949,7 @@ public class ManagedStoragePlugin implements AutoCloseable {
       }
 
       // if we replaced the plugin successfully, clear the permission cache
-      permissionsCache.clear();
+      getPermissionsCache().clear();
 
       return existingConnectionConf.equalsIgnoringNotMetadataImpacting(newConnectionConf);
     } catch(Exception ex) {

@@ -22,6 +22,7 @@ import java.security.PrivilegedExceptionAction;
 import java.util.Optional;
 import java.util.Set;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
 
@@ -67,6 +68,7 @@ import com.dremio.sabot.task.Task.State;
 import com.dremio.sabot.task.TaskDescriptor;
 import com.dremio.sabot.threads.AvailabilityCallback;
 import com.dremio.sabot.threads.sharedres.ActivableResource;
+import com.dremio.sabot.threads.sharedres.SharedResource;
 import com.dremio.sabot.threads.sharedres.SharedResourceManager;
 import com.dremio.sabot.threads.sharedres.SharedResourceType;
 import com.dremio.sabot.threads.sharedres.SharedResourcesContextImpl;
@@ -113,7 +115,6 @@ public class FragmentExecutor {
   private final SharedResourceManager sharedResources;
   private final OperatorCreatorRegistry opCreator;
   private final BufferAllocator allocator;
-  private final ContextInformation contextInfo;
   private final OperatorContextCreator contextCreator;
   private final FunctionLookupContext functionLookupContext;
   private final FunctionLookupContext decimalFunctionLookupContext;
@@ -152,6 +153,8 @@ public class FragmentExecutor {
   // b. an incoming data/oob/finished msg from any upstream fragment.
   private final ActivableResource activateResource;
 
+  private final SharedResource allocatorLock;
+
   public FragmentExecutor(
       FragmentStatusReporter statusReporter,
       SabotConfig config,
@@ -186,7 +189,6 @@ public class FragmentExecutor {
     this.functionLookupContext = functionLookupContext;
     this.decimalFunctionLookupContext = decimalFunctionLookupContext;
     this.allocator = allocator;
-    this.contextInfo = contextInfo;
     this.contextCreator = contextCreator;
     this.tunnelProvider = tunnelProvider;
     this.flushable = flushable;
@@ -204,6 +206,7 @@ public class FragmentExecutor {
     this.eventProvider = eventProvider;
     this.cancelled = SettableFuture.create();
     this.executionControls = executionControls;
+    this.allocatorLock = sharedResources.getGroup(PIPELINE_RES_GRP).createResource("frag-allocator", SharedResourceType.UNKNOWN);
   }
 
   /**
@@ -291,9 +294,9 @@ public class FragmentExecutor {
 
       injector.injectChecked(executionControls, INJECTOR_DO_WORK, OutOfMemoryError.class);
 
-    } catch (OutOfMemoryError e) {
+    } catch (OutOfMemoryError | OutOfMemoryException e) {
       // handle out of memory errors differently from other error types.
-      if (e instanceof OutOfDirectMemoryError || "Direct buffer memory".equals(e.getMessage()) || INJECTOR_DO_WORK.equals(e.getMessage())) {
+      if (e instanceof OutOfDirectMemoryError || e instanceof OutOfMemoryException || "Direct buffer memory".equals(e.getMessage()) || INJECTOR_DO_WORK.equals(e.getMessage())) {
         transitionToFailed(UserException.memoryError(e)
             .addContext(MemoryDebugInfo.getDetailsOnAllocationFailure(new OutOfMemoryException(e), allocator))
             .buildSilently());
@@ -375,7 +378,7 @@ public class FragmentExecutor {
       functionLookupContextToUse = decimalFunctionLookupContext;
     }
     pipeline = PipelineCreator.get(
-        new FragmentExecutionContext(major.getForeman(), sources, cancelled),
+        new FragmentExecutionContext(major.getForeman(), sources, cancelled, major.getContext()),
         buffers,
         opCreator,
         contextCreator,
@@ -435,10 +438,11 @@ public class FragmentExecutor {
   }
 
   private void retire() {
-    Preconditions.checkArgument(!retired, "Fragment executor already required.");
+    Preconditions.checkArgument(!retired, "Fragment executor already retired.");
 
     if(!flushable.flushMessages()) {
       // rerun retire if we have messages still pending send completion.
+      logger.debug("fragment retire blocked on downstream");
       taskState = State.BLOCKED_ON_DOWNSTREAM;
       return;
     }
@@ -450,6 +454,7 @@ public class FragmentExecutor {
 
     if(!flushable.flushMessages()) {
       // rerun retire if we have messages still pending send completion.
+      logger.debug("fragment retire blocked on downstream");
       taskState = State.BLOCKED_ON_DOWNSTREAM;
       return;
     } else {
@@ -460,7 +465,10 @@ public class FragmentExecutor {
 
     deferredException.suppressingClose(contextCreator);
     deferredException.suppressingClose(outputAllocator);
-    deferredException.suppressingClose(allocator);
+    synchronized (allocatorLock) {
+      workQueue.retire();
+      deferredException.suppressingClose(allocator);
+    }
     deferredException.suppressingClose(ticket);
     if (tunnelProvider != null && tunnelProvider.getCoordTunnel() != null) {
       deferredException.suppressingClose(tunnelProvider.getCoordTunnel().getTunnel());
@@ -629,27 +637,53 @@ public class FragmentExecutor {
 
     public void handle(OutOfBandMessage message) {
       requestActivate("out of band message");
-      workQueue.put(() -> {
+      synchronized (allocatorLock) {
+        Optional<ArrowBuf> msgBuffer = message.getIfSingleBuffer();
+        if (msgBuffer.isPresent()) {
+          try {
+            allocator.assertOpen(); // throws exception if allocator is closed
+            final ArrowBuf transferredBuf = msgBuffer.get().getReferenceManager()
+                    .transferOwnership(msgBuffer.get(), allocator).getTransferredBuffer();
+            message = new OutOfBandMessage(message.toProtoMessage(), transferredBuf);
+            msgBuffer = Optional.of(transferredBuf);
+          } catch (Exception e) {
+            logger.error("Error while transferring OOBMessage buffer to the fragment allocator", e);
+            return; // Fragment will not be able to handle the buffer.
+          }
+        }
+        final AutoCloseable closeable = msgBuffer.map(AutoCloseable.class::cast).orElse(() -> {});
+
+        final OutOfBandMessage finalMessage = message;
+        workQueue.put(() -> {
           try {
             if (!isSetup) {
-              if (message.getIsOptional()) {
+              if (finalMessage.getIsOptional()) {
                 logger.warn("Fragment {} received optional OOB message in state {} for operatorId {}. Fragment is not yet set up. Ignoring message.",
-                  this.getHandle().toString(), state.toString(), message.getOperatorId());
+                        this.getHandle().toString(), state.toString(), finalMessage.getOperatorId());
               } else {
                 logger.error("Fragment {} received OOB message in state {} for operatorId {}. Fragment is not yet set up.",
-                  this.getHandle().toString(), state.toString(), message.getOperatorId());
+                        this.getHandle().toString(), state.toString(), finalMessage.getOperatorId());
                 throw new IllegalStateException("Unable to handle OOB message");
               }
             } else {
-              pipeline.workOnOOB(message);
+              pipeline.workOnOOB(finalMessage);
             }
-          } catch(Exception e) {
-            logger.warn("Failure while handling OOB message. {}", message, e);
-
-            //propagate the exception
+          } catch (IllegalStateException e) {
+            logger.warn("Failure while handling OOB message. {}", finalMessage, e);
             throw e;
+          } catch (Exception e) {
+            //propagate the exception
+            logger.warn("Failure while handling OOB message. {}", finalMessage, e);
+            throw new IllegalStateException(e);
+          } finally {
+            try {
+              closeable.close();
+            } catch (Exception e) {
+              logger.error("Error while closing OOBMessage ref", e);
+            }
           }
-      });
+        }, closeable);
+      }
     }
 
     public void activate() {

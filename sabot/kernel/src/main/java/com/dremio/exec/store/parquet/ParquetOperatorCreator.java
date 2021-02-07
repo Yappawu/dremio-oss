@@ -18,7 +18,9 @@ package com.dremio.exec.store.parquet;
 import static com.dremio.exec.store.parquet.ParquetFormatDatasetAccessor.ACCELERATOR_STORAGEPLUGIN_NAME;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -29,20 +31,23 @@ import java.util.stream.Collectors;
 
 import org.apache.arrow.util.AutoCloseables;
 import org.apache.arrow.util.Preconditions;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.arrow.vector.types.pojo.Field;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.common.exceptions.InvalidMetadataErrorContext;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.expression.SchemaPath;
+import com.dremio.common.map.CaseInsensitiveMap;
 import com.dremio.datastore.LegacyProtobufSerializer;
 import com.dremio.exec.ExecConstants;
 import com.dremio.exec.physical.base.GroupScan;
 import com.dremio.exec.planner.physical.visitor.GlobalDictionaryFieldInfo;
 import com.dremio.exec.store.FilteringCoercionReader;
+import com.dremio.exec.store.HiveParquetCoercionReader;
 import com.dremio.exec.store.RecordReader;
 import com.dremio.exec.store.SplitAndPartitionInfo;
 import com.dremio.exec.store.dfs.FileSystemPlugin;
+import com.dremio.exec.store.dfs.GetSplitAndPartitionInfo;
 import com.dremio.exec.store.dfs.PrefetchingIterator;
 import com.dremio.exec.store.dfs.SplitReaderCreator;
 import com.dremio.exec.store.dfs.implicit.CompositeReaderConfig;
@@ -52,6 +57,7 @@ import com.dremio.io.file.FileAttributes;
 import com.dremio.io.file.FileSystem;
 import com.dremio.io.file.Path;
 import com.dremio.options.Options;
+import com.dremio.options.TypeValidators;
 import com.dremio.options.TypeValidators.BooleanValidator;
 import com.dremio.sabot.exec.context.OperatorContext;
 import com.dremio.sabot.exec.fragment.FragmentExecutionContext;
@@ -71,6 +77,7 @@ import com.dremio.service.namespace.file.proto.ParquetFileConfig;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 /**
@@ -81,6 +88,10 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ParquetOperatorCreator.class);
 
   public static BooleanValidator PREFETCH_READER = new BooleanValidator("store.parquet.prefetch_reader", true);
+  public static BooleanValidator READ_COLUMN_INDEXES = new BooleanValidator("store.parquet.read_column_indexes", true);
+  // Increasing this will increase the number of splits that are prefetched. Unfortunately, it can also lead to multiple footer reads
+  // if the future splits are from the same file
+  public static TypeValidators.RangeLongValidator NUM_SPLITS_TO_PREFETCH = new TypeValidators.RangeLongValidator("store.parquet.num_splits_to_prefetch", 1, 20L, 1);
 
   @Override
   public ProducerOperator create(FragmentExecutionContext fragmentExecContext, final OperatorContext context, final ParquetSubScan config) throws ExecutionSetupException {
@@ -94,6 +105,10 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
     } catch (Exception ex) {
       throw new ExecutionSetupException("Failed to create scan operator.", ex);
     }
+  }
+
+  public Iterator<RecordReader> getReaders(FragmentExecutionContext fragmentExecContext, final OperatorContext context, final ParquetSubScan config) throws ExecutionSetupException {
+    return new Creator(fragmentExecContext, context, config).getReaders();
   }
 
   /**
@@ -111,18 +126,23 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
     private final boolean readInt96AsTimeStamp;
     private final boolean enableDetailedTracing;
     private final boolean prefetchReader;
+    private final boolean trimRowGroups;
     private final boolean supportsColocatedReads;
+    private final int numSplitsToPrefetch;
     private final Map<String, GlobalDictionaryFieldInfo> globalDictionaryEncodedColumns;
     private final CompositeReaderConfig readerConfig;
     private final ParquetSubScan config;
     private final OperatorContext context;
     private final InputStreamProviderFactory factory;
+    private final FragmentExecutionContext fragmentExecutionContext;
 
     public Creator(FragmentExecutionContext fragmentExecContext, final OperatorContext context, final ParquetSubScan config) throws ExecutionSetupException {
       this.context = context;
       this.config = config;
       this.factory = context.getConfig().getInstance(InputStreamProviderFactory.KEY, InputStreamProviderFactory.class, InputStreamProviderFactory.DEFAULT);
       this.prefetchReader = context.getOptions().getOption(PREFETCH_READER);
+      this.numSplitsToPrefetch = (int)context.getOptions().getOption(NUM_SPLITS_TO_PREFETCH);
+      this.trimRowGroups = context.getOptions().getOption(ExecConstants.TRIM_ROWGROUPS_FROM_FOOTER);
       this.plugin = fragmentExecContext.getStoragePlugin(config.getPluginId());
       try {
         this.fs = plugin.createFS(config.getProps().getUserName(), context);
@@ -150,7 +170,7 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
       this.readInt96AsTimeStamp = context.getOptions().getOption(ExecConstants.PARQUET_READER_INT96_AS_TIMESTAMP_VALIDATOR);
       this.enableDetailedTracing = context.getOptions().getOption(ExecConstants.ENABLED_PARQUET_TRACING);
       this.supportsColocatedReads = plugin.supportsColocatedReads();
-      this.readerConfig = CompositeReaderConfig.getCompound(config.getFullSchema(), config.getColumns(), config.getPartitionColumns());
+      this.readerConfig = CompositeReaderConfig.getCompound(context, config.getFullSchema(), config.getColumns(), config.getPartitionColumns());
 
       this.globalDictionaryEncodedColumns = Maps.newHashMap();
 
@@ -159,6 +179,7 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
           globalDictionaryEncodedColumns.put(fieldInfo.getFieldName(), fieldInfo);
         }
       }
+      this.fragmentExecutionContext = fragmentExecContext;
     }
 
     private boolean autoCorrectCorruptDatesFromFileFormat(FileConfig fileConfig) {
@@ -193,21 +214,37 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
         next = cur;
       }
 
-      PrefetchingIterator<ParquetSplitReaderCreator> iterator = new PrefetchingIterator<>(splits);
+      PrefetchingIterator<ParquetSplitReaderCreator> iterator = new PrefetchingIterator<>(context, readerConfig, splits, numSplitsToPrefetch);
       try {
-        return new ScanOperator(config, context, iterator, globalDictionaries);
+        return new ScanOperator(config, context, iterator, globalDictionaries, fragmentExecutionContext.getForemanEndpoint(), fragmentExecutionContext.getQueryContextInformation());
       } catch (Exception ex) {
         AutoCloseables.close(iterator);
         throw ex;
       }
     }
 
+    public Iterator<RecordReader> getReaders() {
+      List<ParquetSplitReaderCreator> splits = config.getSplits().stream().map(ParquetSplitReaderCreator::new).collect(Collectors.toList());
+      ParquetSplitReaderCreator next = null;
+
+      // set forward links
+      for(int i = splits.size() - 1; i > -1; i--) {
+        ParquetSplitReaderCreator cur = splits.get(i);
+        cur.setNext(next);
+        next = cur;
+      }
+
+      return new PrefetchingIterator<>(context, readerConfig, splits, numSplitsToPrefetch);
+    }
+
     /**
      * A lightweight object used to manage the creation of a reader. Allows pre-initialization of data before reader
      * construction.
      */
-    private class ParquetSplitReaderCreator extends SplitReaderCreator implements Comparable<ParquetSplitReaderCreator>, AutoCloseable {
+    private class ParquetSplitReaderCreator extends SplitReaderCreator implements GetSplitAndPartitionInfo, Comparable<ParquetSplitReaderCreator>, AutoCloseable {
       private SplitAndPartitionInfo datasetSplit;
+      // set to true while creating input stream provider. When true, the footer is trimmed and unneeded row groups are removed from the footer
+      private boolean trimFooter = false;
 
       public ParquetSplitReaderCreator(SplitAndPartitionInfo splitInfo) {
         this.datasetSplit = splitInfo;
@@ -237,11 +274,22 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
       }
 
       @Override
-      public void createInputStreamProvider(Path lastPath, ParquetMetadata lastFooter) {
+      public void addRowGroupsToRead(Set<Integer> rowGroupsToRead) {
+        rowGroupsToRead.add(splitXAttr.getRowGroupIndex());
+      }
+
+      @Override
+      public SplitAndPartitionInfo getSplit() {
+        return this.datasetSplit;
+      }
+
+      @Override
+      public void createInputStreamProvider(InputStreamProvider lastInputStreamProvider, MutableParquetMetadata lastFooter) {
         if(inputStreamProvider != null) {
           return;
         }
 
+        logger.debug("Prefetching footer for split {}", getPath());
         handleEx(() -> {
           long length, mTime;
 
@@ -254,14 +302,31 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
             mTime = fileAttributes.lastModifiedTime().toMillis();
           }
 
-          final ParquetMetadata validLastFooter = path.equals(lastPath) ? lastFooter : null;
+          final Path lastPath = (lastInputStreamProvider != null) ? lastInputStreamProvider.getStreamPath() : null;
+          MutableParquetMetadata validLastFooter = null;
+          InputStreamProvider validLastInputStreamProvider = null;
+          if (path.equals(lastPath)) {
+            validLastFooter = lastFooter;
+            validLastInputStreamProvider = lastInputStreamProvider;
+          }
+          // if we are not using the last footer, mark the footer for trimming
+          trimFooter = (validLastFooter == null) && trimRowGroups;
 
-          BiConsumer<Path, ParquetMetadata> depletionListener = (path, footer) -> {
-            if(!prefetchReader || next == null) {
+          BiConsumer<InputStreamProvider, MutableParquetMetadata> depletionListener = (inputStreamProvider, footer) -> {
+            if(!prefetchReader) {
               return;
             }
 
-            next.createInputStreamProvider(path, footer);
+            SplitReaderCreator nextCreator = next;
+            int numPrefetched = 0;
+            while (nextCreator != null) {
+              nextCreator.createInputStreamProvider(inputStreamProvider, footer);
+              nextCreator = ((ParquetSplitReaderCreator) nextCreator).next;
+              numPrefetched++;
+              if (numPrefetched == numSplitsToPrefetch) {
+                break;
+              }
+            }
           };
 
           final boolean readFullFile = length < context.getOptions().getOption(ExecConstants.PARQUET_FULL_FILE_READ_THRESHOLD) &&
@@ -271,6 +336,10 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
           final List<String> dataset = referencedTables == null || referencedTables.isEmpty() ? null : referencedTables.iterator().next();
           ParquetScanProjectedColumns projectedColumns = ParquetScanProjectedColumns.fromSchemaPathAndIcebergSchema(realFields, getIcebergColumnIDList());
 
+          // If the ExecOption to ReadColumnIndexes is True and the configuration has a Filter, set readColumnIndices to true.
+          boolean readColumnIndices = (context.getOptions().getOption(READ_COLUMN_INDEXES) &&
+                                      ((config.getConditions() != null) && (config.getConditions().size() >= 1)));
+
           inputStreamProvider = factory.create(
               fs,
               context,
@@ -279,21 +348,31 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
               datasetSplit.getPartitionInfo().getSize(),
               projectedColumns,
               validLastFooter,
+              validLastInputStreamProvider,
               (footer) -> splitXAttr.getRowGroupIndex(),
               depletionListener,
               readFullFile,
               dataset,
-              mTime);
+              mTime,
+              config.isArrowCachingEnabled(),
+              readColumnIndices);
           return null;
         });
       }
 
       @Override
-      public RecordReader createRecordReader() {
+      public RecordReader createRecordReader(MutableParquetMetadata footer) {
         Preconditions.checkNotNull(inputStreamProvider);
         return handleEx(() -> {
           try {
-            final ParquetMetadata footer = inputStreamProvider.getFooter();
+            if (trimFooter) {
+              // footer needs to be trimmed
+              Set<Integer> rowGroupsToRetain = Sets.newHashSet();
+              this.getRowGroupsFromSameFile(this.path, rowGroupsToRetain);
+              Preconditions.checkArgument(rowGroupsToRetain.size() != 0, "Parquet reader should read at least one row group");
+              long numRowGroupsTrimmed = footer.removeUnusedRowGroups(rowGroupsToRetain);
+              context.getStats().addLongStat(ScanOperator.Metric.NUM_ROW_GROUPS_TRIMMED, numRowGroupsTrimmed);
+            }
 
             SchemaDerivationHelper.Builder schemaHelperBuilder = SchemaDerivationHelper.builder()
                 .readInt96AsTimeStamp(readInt96AsTimeStamp)
@@ -328,9 +407,37 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
                 supportsColocatedReads,
                 inputStreamProvider
               );
-              RecordReader wrappedRecordReader = readerConfig.wrapIfNecessary(context.getAllocator(), innerIcebergParquetReader, datasetSplit);
-              inner = new FilteringCoercionReader(context, projectedColumns.getBatchSchemaProjectedColumns(), wrappedRecordReader, config.getFullSchema(), config.getConditions());
+              RecordReader wrappedRecordReader = new FilteringCoercionReader(context, projectedColumns.getBatchSchemaProjectedColumns(), innerIcebergParquetReader, config.getFullSchema(), config.getConditions());
+              inner = readerConfig.wrapIfNecessary(context.getAllocator(), wrappedRecordReader, datasetSplit);
             } else {
+              boolean mixedTypesDisabled = context.getOptions().getOption(ExecConstants.MIXED_TYPES_DISABLED);
+              SchemaDerivationHelper schemaDerivationHelper = schemaHelperBuilder.noSchemaLearning(config.getFullSchema()).build();
+              if (mixedTypesDisabled) {
+                final UpPromotingParquetReader innerParquetReader = new UpPromotingParquetReader(
+                  context,
+                  readerFactory,
+                  config.getFullSchema(),
+                  projectedColumns,
+                  globalDictionaryEncodedColumns,
+                  config.getConditions(),
+                  splitXAttr,
+                  fs,
+                  footer,
+                  globalDictionaries,
+                  schemaDerivationHelper,
+                  vectorize,
+                  enableDetailedTracing,
+                  supportsColocatedReads,
+                  inputStreamProvider);
+
+                Map<String, Field> fieldsByName = CaseInsensitiveMap.newHashMap();
+                config.getFullSchema().getFields().forEach(field -> fieldsByName.put(field.getName(), field));
+                RecordReader wrappedRecordReader = HiveParquetCoercionReader.newInstance(context,
+                  projectedColumns.getBatchSchemaProjectedColumns(), innerParquetReader, config.getFullSchema(),
+                  new ParquetTypeCoercion(fieldsByName), config.getConditions());
+                return readerConfig.wrapIfNecessary(context.getAllocator(), wrappedRecordReader, datasetSplit);
+              }
+
               final UnifiedParquetReader innerParquetReader = new UnifiedParquetReader(
                 context,
                 readerFactory,
@@ -338,7 +445,7 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
                 projectedColumns,
                 globalDictionaryEncodedColumns,
                 config.getConditions(),
-                ParquetFilterCreator.DEFAULT,
+                readerFactory.newFilterCreator(context, null, null, context.getAllocator()),
                 ParquetDictionaryConvertor.DEFAULT,
                 splitXAttr,
                 fs,
@@ -348,8 +455,8 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
                 vectorize,
                 enableDetailedTracing,
                 supportsColocatedReads,
-                inputStreamProvider
-              );
+                inputStreamProvider,
+                new ArrayList<>());
               inner = readerConfig.wrapIfNecessary(context.getAllocator(), innerParquetReader, datasetSplit);
             }
             return inner;
@@ -377,8 +484,8 @@ public class ParquetOperatorCreator implements Creator<ParquetSubScan> {
       @Override
       public void close() throws Exception {
         AutoCloseables.close(inputStreamProvider);
+        inputStreamProvider = null;
       }
-
     }
 
     private List<IcebergSchemaField> getIcebergColumnIDList() {

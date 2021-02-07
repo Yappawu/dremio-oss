@@ -22,7 +22,7 @@ import jobsUtils from 'utils/jobsUtils';
 import timeUtils from 'utils/timeUtils';
 import { getIconByEntityType } from 'utils/iconUtils';
 import DatasetItemLabel from 'components/Dataset/DatasetItemLabel';
-import DatasetAccelerationButton from 'dyn-load/components/Acceleration/DatasetAccelerationButton';
+// import DatasetAccelerationButton from 'dyn-load/components/Acceleration/DatasetAccelerationButton'; // To Be Removed
 import SettingsBtn from 'components/Buttons/SettingsBtn';
 import RealTimeTimer from 'components/RealTimeTimer';
 import CopyButton from 'components/Buttons/CopyButton';
@@ -86,7 +86,7 @@ class OverviewContent extends PureComponent {
       } else if (isMetadata) {
         return 'Job.ODBCMetadataRequest';
       }
-      return 'ODBCClient';
+      return 'Job.ODBCClient';
     case 'JDBC':
       if (isPrepareCreate) {
         return 'Job.JDBCCreate';
@@ -95,7 +95,7 @@ class OverviewContent extends PureComponent {
       } else if (isMetadata) {
         return 'Job.JDBCMetadataRequest';
       }
-      return 'JDBCClient';
+      return 'Job.JDBCClient';
     case 'REST':
       return 'Job.RESTApp';
     case 'ACCELERATOR_CREATE':
@@ -104,6 +104,13 @@ class OverviewContent extends PureComponent {
       return 'Job.AcceleratorRefresh';
     case 'ACCELERATOR_DROP':
       return 'Job.AcceleratorRemoval';
+    case 'FLIGHT':
+      if (isPrepareCreate) {
+        return 'Job.FlightCreate';
+      } else if (isPrepareExecute) {
+        return 'Job.FlightExecute';
+      }
+      return 'Job.FlightClient';
     case 'UNKNOWN':
     default:
       return 'File.Unknown';
@@ -279,9 +286,9 @@ class OverviewContent extends PureComponent {
                     style={{ backgroundColor: 'rgba(0, 0, 0, 0.0392157)', height: 27 }}
                     hasDropdown={false}
                   />}
-                  {item.get('type') &&
+                  {/* {item.get('type') &&
                     <DatasetAccelerationButton fullPath={item.get('datasetPathList')} side='left'/>
-                  }
+                  } // To Be Removed */}
                 </div>
               </li>
             );
@@ -346,7 +353,7 @@ class OverviewContent extends PureComponent {
     const { jobDetails } = this.props;
     const attemptDetails = jobDetails.get('attemptDetails');
     const lastAttempt = attemptDetails.last();
-    const totalTimeMs = lastAttempt.get('enqueuedTime') + lastAttempt.get('executionTime') + lastAttempt.get('planningTime');
+    const totalTimeMs = lastAttempt.get('totalTime');
     return jobsUtils.formatJobDuration(totalTimeMs);
   }
 

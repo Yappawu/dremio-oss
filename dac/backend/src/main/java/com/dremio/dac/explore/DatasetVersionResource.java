@@ -26,6 +26,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.ConcurrentModificationException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +100,7 @@ import com.dremio.dac.resource.BaseResourceWithAllocator;
 import com.dremio.dac.server.BufferAllocatorFactory;
 import com.dremio.dac.service.datasets.DatasetVersionMutator;
 import com.dremio.dac.service.errors.ClientErrorException;
+import com.dremio.dac.service.errors.ConflictException;
 import com.dremio.dac.service.errors.DatasetNotFoundException;
 import com.dremio.dac.service.errors.DatasetVersionNotFoundException;
 import com.dremio.exec.server.SabotContext;
@@ -121,6 +123,7 @@ import com.dremio.service.namespace.dataset.proto.ViewFieldType;
 import com.dremio.service.namespace.proto.NameSpaceContainer;
 import com.dremio.service.namespace.proto.NameSpaceContainer.Type;
 import com.dremio.service.users.UserNotFoundException;
+import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 
 /**
@@ -302,12 +305,14 @@ public class DatasetVersionResource extends BaseResourceWithAllocator {
   @Produces(APPLICATION_JSON)
   public InitialPreviewResponse getDatasetForVersion(
       @QueryParam("tipVersion") DatasetVersion tipVersion,
-      @QueryParam("limit") Integer limit) throws DatasetVersionNotFoundException, NamespaceException, JobNotFoundException {
+      @QueryParam("limit") Integer limit,
+      @QueryParam("engineName") String engineName) throws DatasetVersionNotFoundException, NamespaceException, JobNotFoundException {
     // tip version is optional, as it is only needed when we are navigated back in history
     // otherwise assume the current version is at the tip of the history
     VirtualDatasetUI dataset = getDatasetConfig();
     tipVersion = tipVersion != null ? tipVersion : dataset.getVersion();
-    return tool.createPreviewResponseForExistingDataset(getOrCreateAllocator("getDatasetForVersion"), dataset, new DatasetVersionResourcePath(datasetPath, tipVersion), limit);
+    return tool.createPreviewResponseForExistingDataset(getOrCreateAllocator("getDatasetForVersion"), dataset,
+      new DatasetVersionResourcePath(datasetPath, tipVersion), limit, engineName);
   }
 
   @GET @Path("review")
@@ -387,9 +392,12 @@ public class DatasetVersionResource extends BaseResourceWithAllocator {
    */
   @GET @Path("run")
   @Produces(APPLICATION_JSON) @Consumes(APPLICATION_JSON)
-  public InitialRunResponse run(@QueryParam("tipVersion") DatasetVersion tipVersion) throws DatasetVersionNotFoundException, InterruptedException, NamespaceException {
+  public InitialRunResponse run(@QueryParam("tipVersion") DatasetVersion tipVersion,
+                                @QueryParam("engineName") String engineName) throws DatasetVersionNotFoundException, InterruptedException, NamespaceException {
     final VirtualDatasetUI virtualDatasetUI = getDatasetConfig();
-    final SqlQuery query = new SqlQuery(virtualDatasetUI.getSql(), virtualDatasetUI.getState().getContextList(), securityContext);
+
+    final SqlQuery query = new SqlQuery(virtualDatasetUI.getSql(), virtualDatasetUI.getState().getContextList(), securityContext,
+      Strings.isNullOrEmpty(engineName)? null : engineName);
     JobSubmittedListener listener = new JobSubmittedListener();
     final JobId jobId = executor.runQueryWithListener(query, QueryType.UI_RUN, datasetPath, version, listener).getJobId();
     // wait for job to start (or WAIT_FOR_RUN_HISTORY_S seconds).
@@ -467,9 +475,11 @@ public class DatasetVersionResource extends BaseResourceWithAllocator {
 
   public DatasetUI save(VirtualDatasetUI vds, DatasetPath asDatasetPath, String savedTag, NamespaceAttribute... attributes)
       throws DatasetNotFoundException, UserNotFoundException, NamespaceException, DatasetVersionNotFoundException {
+    final String nameConflictErrorMsg = String.format("VDS '%s' already exists. Please enter a different name.",
+      asDatasetPath.getLeaf());
     final List<String> fullPathList = asDatasetPath.toPathList();
     if (isAncestor(vds, fullPathList)) {
-      throw new ClientErrorException("A dataset cannot have the same name as one of its ancestors.");
+      throw new ConflictException(nameConflictErrorMsg);
     }
 
     if (!datasetPath.equals(asDatasetPath)) {
@@ -503,6 +513,8 @@ public class DatasetVersionResource extends BaseResourceWithAllocator {
       vds.setPreviousVersion(rewrittenPrev);
     } catch(NamespaceNotFoundException nfe) {
       throw new ClientErrorException("Parent folder doesn't exist", nfe);
+    } catch(ConcurrentModificationException cme) {
+      throw new ConflictException(nameConflictErrorMsg, cme);
     }
 
     return newDataset(vds, null);

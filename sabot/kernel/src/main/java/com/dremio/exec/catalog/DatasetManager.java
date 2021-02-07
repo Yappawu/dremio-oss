@@ -15,9 +15,10 @@
  */
 package com.dremio.exec.catalog;
 
+import static com.dremio.exec.planner.physical.PlannerSettings.FULL_NESTED_SCHEMA_SUPPORT;
+
 import java.util.Comparator;
 import java.util.ConcurrentModificationException;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Optional;
@@ -29,8 +30,6 @@ import com.dremio.common.utils.PathUtils;
 import com.dremio.connector.ConnectorException;
 import com.dremio.connector.metadata.DatasetHandle;
 import com.dremio.connector.metadata.DatasetMetadata;
-import com.dremio.connector.metadata.DatasetSplit;
-import com.dremio.connector.metadata.PartitionChunk;
 import com.dremio.connector.metadata.PartitionChunkListing;
 import com.dremio.connector.metadata.SourceMetadata;
 import com.dremio.datastore.SearchQueryUtils;
@@ -246,7 +245,7 @@ class DatasetManager {
         datasetConfig,
         accessUserName,
         DatasetSplitsPointer.of(userNamespaceService, datasetConfig));
-    return new NamespaceTable(tableMetadata);
+    return new NamespaceTable(tableMetadata, optionManager.getOption(FULL_NESTED_SCHEMA_SUPPORT));
   }
 
   /**
@@ -346,6 +345,20 @@ class DatasetManager {
       datasetConfig = MetadataObjectsUtils.newShallowConfig(handle.get());
     }
 
+    //Todo: Use a single call like getEntities which supports ACLs
+    try {
+      // We will attempt to save the dataset, so ensure we have access to the source before saving
+      userNamespaceService.getSource(new NamespaceKey(key.getRoot()));
+    } catch (NamespaceException ignored) {
+      try {
+        //this additional check is required to check if the root is Home.
+        userNamespaceService.getHome(new NamespaceKey(key.getRoot()));
+      } catch (NamespaceException nse) {
+        logger.debug("Unable to obtain source {}.", key.getRoot());
+        return null;
+      }
+    }
+
     try {
       plugin.getSaver()
           .save(datasetConfig, handle.get(), plugin.unwrap(StoragePlugin.class), opportunisticSave, retrievalOptions);
@@ -378,7 +391,7 @@ class DatasetManager {
     // TODO: use MaterializedSplitsPointer if metadata is not too big!
     final TableMetadata tableMetadata = new TableMetadataImpl(plugin.getId(), datasetConfig,
         accessUserName, DatasetSplitsPointer.of(userNamespaceService, datasetConfig));
-    return new NamespaceTable(tableMetadata);
+    return new NamespaceTable(tableMetadata, optionManager.getOption(FULL_NESTED_SCHEMA_SUPPORT));
   }
 
   // Figure out the user we want to access the source with.  If the source supports impersonation we allow it to
@@ -402,15 +415,17 @@ class DatasetManager {
 
   private ViewTable createTableFromVirtualDataset(DatasetConfig datasetConfig, MetadataRequestOptions options) {
     try {
-      View view = Views.fieldTypesToView(
-          Iterables.getLast(datasetConfig.getFullPathList()),
-          datasetConfig.getVirtualDataset().getSql(),
-          ViewFieldsHelper.getCalciteViewFields(datasetConfig),
-          datasetConfig.getVirtualDataset().getContextList()
-      );
-
       // 1.4.0 and earlier didn't correctly save virtual dataset schema information.
       BatchSchema schema = DatasetHelper.getSchemaBytes(datasetConfig) != null ? CalciteArrowHelper.fromDataset(datasetConfig) : null;
+
+      View view = Views.fieldTypesToView(
+        Iterables.getLast(datasetConfig.getFullPathList()),
+        datasetConfig.getVirtualDataset().getSql(),
+        ViewFieldsHelper.getCalciteViewFields(datasetConfig),
+        datasetConfig.getVirtualDataset().getContextList(),
+        options.getSchemaConfig().getOptions() != null && options.getSchemaConfig().getOptions().getOption(FULL_NESTED_SCHEMA_SUPPORT) ? schema : null
+      );
+
       return new ViewTable(new NamespaceKey(datasetConfig.getFullPathList()), view, datasetConfig, schema);
     } catch (Exception e) {
       logger.warn("Failure parsing virtual dataset, not including in available schema.", e);
@@ -554,22 +569,13 @@ class DatasetManager {
     try (DatasetMetadataSaver saver = userNamespace.newDatasetMetadataSaver(key, nsConfig.getId(), splitCompression, optionManager.getOption(CatalogOptions.SINGLE_SPLIT_PARTITION_MAX))) {
       final PartitionChunkListing chunkListing = sourceMetadata.listPartitionChunks(handle,
           options.asListPartitionChunkOptions(nsConfig));
-      final Iterator<? extends PartitionChunk> chunks = chunkListing.iterator();
-      while (chunks.hasNext()) {
-        final PartitionChunk chunk = chunks.next();
 
-        final Iterator<? extends DatasetSplit> splits = chunk.getSplits().iterator();
-        while (splits.hasNext()) {
-          final DatasetSplit split = splits.next();
-          saver.saveDatasetSplit(split);
-        }
-        saver.savePartitionChunk(chunk);
-      }
-
+      final long recordCountFromSplits = saver == null || chunkListing == null ? 0 :
+        saver.savePartitionChunks(chunkListing);
       final DatasetMetadata datasetMetadata = sourceMetadata.getDatasetMetadata(handle, chunkListing,
           options.asGetMetadataOptions(nsConfig));
       MetadataObjectsUtils.overrideExtended(nsConfig, datasetMetadata, Optional.empty(),
-          options.maxMetadataLeafColumns());
+        recordCountFromSplits, options.maxMetadataLeafColumns());
       saver.saveDataset(nsConfig, false);
     } catch (DatasetMetadataTooLargeException e) {
       nsConfig.setRecordSchema(null);

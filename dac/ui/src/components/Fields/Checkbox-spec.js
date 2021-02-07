@@ -34,8 +34,8 @@ describe('Checkbox', () => {
   });
 
   it('should render props.label', () => {
-    wrapper.setProps({label: 'someLabel'});
-    expect(wrapper.text()).to.contain('someLabel');
+    wrapper.setProps({label: 'someLabel', labelBefore: true});
+    expect(wrapper.dive().text()).to.contain('someLabel');
   });
 
   it('should render props.inputType', () => {
@@ -45,10 +45,10 @@ describe('Checkbox', () => {
 
   it('should render label first only if labelBefore=true', () => {
     wrapper.setProps({labelBefore: true, label: 'someLabel'});
-    expect(wrapper.children().at(0).text()).to.equal('someLabel');
+    expect(wrapper.dive().children().at(0).text()).to.equal('someLabel');
 
     wrapper.setProps({labelBefore: false, label: 'someLabel'});
-    expect(wrapper.children().at(2).text()).to.equal('someLabel');
+    expect(wrapper.dive().children().at(2).text()).to.equal('someLabel');
   });
 
   it('should render checked when checked is truthy regardless of value', () => {
@@ -65,8 +65,25 @@ describe('Checkbox', () => {
 
   describe('#renderDummyCheckbox', () => {
     it('should render ✔ only if isChecked', () => {
-      expect(shallow(instance.renderDummyCheckbox(false)).text()).to.not.contain('✔');
-      expect(shallow(instance.renderDummyCheckbox(true)).text()).to.contain('✔');
+      expect(shallow(instance.renderDummyCheckbox(false)).html()).to.not.contain('fa-check');
+      expect(shallow(instance.renderDummyCheckbox(true)).html()).to.contain('fa-check');
+    });
+  });
+
+  describe('render on/off switch', () => {
+    it('should use dummy w/o isOnOffSwitch', () => {
+      sinon.spy(instance, 'renderDummyCheckbox');
+      sinon.spy(instance, 'renderOnOffSwitch');
+      wrapper.setProps({value: true});
+      expect(instance.renderDummyCheckbox).to.be.called;
+      expect(instance.renderOnOffSwitch).to.not.be.called;
+    });
+    it('should use isOnOffSwitch param', () => {
+      sinon.spy(instance, 'renderDummyCheckbox');
+      sinon.spy(instance, 'renderOnOffSwitch');
+      wrapper.setProps({isOnOffSwitch: true});
+      expect(instance.renderDummyCheckbox).to.not.be.called;
+      expect(instance.renderOnOffSwitch).to.be.called;
     });
   });
 });

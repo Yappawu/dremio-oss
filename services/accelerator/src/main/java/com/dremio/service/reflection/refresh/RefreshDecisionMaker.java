@@ -30,7 +30,7 @@ import com.dremio.service.namespace.NamespaceService;
 import com.dremio.service.namespace.dataset.proto.AccelerationSettings;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
 import com.dremio.service.namespace.dataset.proto.RefreshMethod;
-import com.dremio.service.reflection.IncrementalUpdateUtils;
+import com.dremio.service.reflection.IncrementalUpdateServiceUtils;
 import com.dremio.service.reflection.ReflectionSettings;
 import com.dremio.service.reflection.ReflectionUtils;
 import com.dremio.service.reflection.proto.Materialization;
@@ -63,14 +63,16 @@ class RefreshDecisionMaker {
       RelNode plan,
       RelNode strippedPlan,
       Iterable<DremioTable> requestedTables,
-      RelSerializerFactory serializerFactory) {
+      RelSerializerFactory serializerFactory,
+      boolean strictRefresh,
+      boolean forceFullUpdate) {
 
     final long newSeriesId = System.currentTimeMillis();
 
     final RefreshDecision decision = new RefreshDecision();
 
     // We load settings here to determine what type of update we need to do (full or incremental)
-    final AccelerationSettings settings = IncrementalUpdateUtils.extractRefreshSettings(strippedPlan, reflectionSettings);
+    final AccelerationSettings settings = IncrementalUpdateServiceUtils.extractRefreshSettings(strippedPlan, reflectionSettings);
 
     decision.setAccelerationSettings(settings);
 
@@ -103,9 +105,29 @@ class RefreshDecisionMaker {
           .setSeriesId(newSeriesId);
     }
 
+    // This is an incremental update dataset.
+    // if we already have valid refreshes, we should use the their seriesId
+    final Refresh refresh = materializationStore.getMostRecentRefresh(materialization.getReflectionId());
+
+    final Integer entryDatasetHash;
+    final Integer decisionDatasetHash;
     try {
       final DatasetConfig dataset = namespace.findDatasetByUUID(entry.getDatasetId());
-      decision.setDatasetHash(ReflectionUtils.computeDatasetHash(dataset, namespace));
+      if (!strictRefresh) {
+        if (entry.getShallowDatasetHash() == null && refresh != null) {
+          decisionDatasetHash = ReflectionUtils.computeDatasetHash(dataset, namespace, false);
+          decision.setDatasetHash(ReflectionUtils.computeDatasetHash(dataset, namespace, true));
+          entryDatasetHash = entry.getDatasetHash();
+        } else {
+          decisionDatasetHash = ReflectionUtils.computeDatasetHash(dataset, namespace, true);
+          decision.setDatasetHash(decisionDatasetHash);
+          entryDatasetHash = entry.getShallowDatasetHash();
+        }
+      } else {
+        decisionDatasetHash = ReflectionUtils.computeDatasetHash(dataset, namespace, false);
+        decision.setDatasetHash(decisionDatasetHash);
+        entryDatasetHash = entry.getDatasetHash();
+      }
     } catch (Exception e) {
       throw UserException.validationError()
         .message("Couldn't expand a materialized view on a non existing dataset")
@@ -114,16 +136,19 @@ class RefreshDecisionMaker {
         .build(logger);
     }
 
-    // This is an incremental update dataset.
-    // if we already have valid refreshes, we should use the their seriesId
-    final Refresh refresh = materializationStore.getMostRecentRefresh(materialization.getReflectionId());
-
     // if this the first refresh of this materialization, let's do a initial refresh.
     if(refresh == null) {
       logger.trace("No existing refresh, doing an initial refresh.");
       return decision.setInitialRefresh(true)
           .setUpdateId(new UpdateId())
           .setSeriesId(newSeriesId);
+    }
+
+    if (forceFullUpdate) {
+      logger.trace("Forcing full update.");
+      return decision.setInitialRefresh(true)
+        .setUpdateId(new UpdateId())
+        .setSeriesId(newSeriesId);
     }
 
     // if the refresh settings changed, do an initial refresh.
@@ -134,7 +159,7 @@ class RefreshDecisionMaker {
           .setSeriesId(newSeriesId);
     }
 
-    if (!Objects.equal(entry.getDatasetHash(), decision.getDatasetHash())) {
+    if (!Objects.equal(entryDatasetHash, decisionDatasetHash)) {
       logger.trace("Change in dataset hash, doing an initial refresh.");
       return decision.setInitialRefresh(true)
           .setUpdateId(new UpdateId())

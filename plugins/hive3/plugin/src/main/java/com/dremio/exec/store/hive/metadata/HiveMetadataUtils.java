@@ -26,6 +26,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -65,6 +66,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.hive.serde2.typeinfo.VarcharTypeInfo;
 import org.apache.hadoop.mapred.FileInputFormat;
+import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
@@ -73,7 +75,7 @@ import org.slf4j.helpers.MessageFormatter;
 
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.util.DateTimes;
-
+import com.dremio.common.util.Closeable;
 import com.dremio.connector.ConnectorException;
 import com.dremio.connector.metadata.DatasetSplit;
 import com.dremio.connector.metadata.DatasetSplitAffinity;
@@ -87,15 +89,17 @@ import com.dremio.exec.catalog.ColumnCountTooLargeException;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.store.TimedRunnable;
 import com.dremio.exec.store.dfs.implicit.DecimalTools;
-import com.dremio.exec.store.hive.ContextClassLoaderSwapper;
 import com.dremio.exec.store.hive.HiveClient;
+import com.dremio.exec.store.hive.HivePf4jPlugin;
 import com.dremio.exec.store.hive.HiveSchemaConverter;
 import com.dremio.exec.store.hive.HiveUtilities;
 import com.dremio.exec.store.hive.exec.apache.HadoopFileSystemWrapper;
 import com.dremio.exec.store.hive.exec.apache.PathUtils;
 import com.dremio.hive.proto.HiveReaderProto;
 import com.dremio.hive.proto.HiveReaderProto.ColumnInfo;
+import com.dremio.hive.proto.HiveReaderProto.FileSystemCachedEntity;
 import com.dremio.hive.proto.HiveReaderProto.HivePrimitiveType;
+import com.dremio.hive.proto.HiveReaderProto.HiveReadSignature;
 import com.dremio.hive.proto.HiveReaderProto.HiveSplitXattr;
 import com.dremio.hive.proto.HiveReaderProto.HiveTableXattr;
 import com.dremio.hive.proto.HiveReaderProto.PartitionXattr;
@@ -167,7 +171,7 @@ public class HiveMetadataUtils {
   }
 
   public static InputFormat<?, ?> getInputFormat(Table table, final HiveConf hiveConf) {
-    try (final ContextClassLoaderSwapper ccls = ContextClassLoaderSwapper.newInstance()) {
+    try (final Closeable ccls = HivePf4jPlugin.swapClassLoader()) {
       final JobConf job = new JobConf(hiveConf);
       final Class<? extends InputFormat> inputFormatClazz = getInputFormatClass(job, table, null);
       job.setInputFormat(inputFormatClazz);
@@ -184,7 +188,7 @@ public class HiveMetadataUtils {
   }
 
   public static boolean isVarcharTruncateSupported(InputFormat<?, ?> format) {
-    return MapredParquetInputFormat.class.isAssignableFrom(format.getClass());
+    return isParquetFormat(format);
   }
 
   public static boolean hasVarcharColumnInTableSchema(
@@ -520,11 +524,17 @@ public class HiveMetadataUtils {
 
   public static HiveSplitXattr buildHiveSplitXAttr(int partitionId, InputSplit inputSplit) {
     final HiveSplitXattr.Builder splitAttr = HiveSplitXattr.newBuilder();
-
     splitAttr.setPartitionId(partitionId);
     splitAttr.setInputSplit(serialize(inputSplit));
-
+    setFileStats(inputSplit, splitAttr);
     return splitAttr.build();
+  }
+
+  private static void setFileStats(InputSplit inputSplit, HiveSplitXattr.Builder splitAttr) {
+    if (inputSplit instanceof ParquetInputFormat.ParquetSplit) {
+      splitAttr.setFileLength(((ParquetInputFormat.ParquetSplit) inputSplit).getFileSize());
+      splitAttr.setLastModificationTime(((ParquetInputFormat.ParquetSplit) inputSplit).getModificationTime());
+    }
   }
 
   public static List<DatasetSplit> getDatasetSplits(TableMetadata tableMetadata,
@@ -577,8 +587,6 @@ public class HiveMetadataUtils {
 
     final long totalSizeOfInputSplits = inputSplitSizes.stream().mapToLong(Long::longValue).sum();
     final int estimatedRecordSize = tableMetadata.getBatchSchema().estimateRecordSize(statsParams.getListSizeEstimate(), statsParams.getVarFieldSizeEstimate());
-
-    metadataAccumulator.accumulateTotalBytesToScanFactor(totalSizeOfInputSplits);
 
     for (int i = 0; i < inputSplits.size(); i++) {
       final InputSplit inputSplit = inputSplits.get(i);
@@ -804,7 +812,7 @@ public class HiveMetadataUtils {
                                                        HiveConf hiveConf,
                                                        int partitionId,
                                                        int maxInputSplitsPerPartition) {
-    try (final ContextClassLoaderSwapper ccls = ContextClassLoaderSwapper.newInstance()) {
+    try (final Closeable ccls = HivePf4jPlugin.swapClassLoader()) {
       final Table table = tableMetadata.getTable();
       final Properties tableProperties = tableMetadata.getTableProperties();
       final JobConf job = new JobConf(hiveConf);
@@ -905,7 +913,11 @@ public class HiveMetadataUtils {
     try {
       // Parquet logic in hive-3.1.1 does not check recursively by default.
       job.set(FileInputFormat.INPUT_DIR_RECURSIVE, "true");
-      inputSplits = format.getSplits(job, 1);
+      if (isParquetFormat(format)) {
+        inputSplits = new ParquetInputFormat().getSplits(job, 1);
+      } else {
+        inputSplits = format.getSplits(job, 1);
+      }
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -915,6 +927,10 @@ public class HiveMetadataUtils {
     } else {
       return Arrays.asList(inputSplits);
     }
+  }
+
+  private static boolean isParquetFormat(InputFormat<?, ?> format) {
+    return MapredParquetInputFormat.class.isAssignableFrom(format.getClass());
   }
 
   /**
@@ -1225,7 +1241,7 @@ public class HiveMetadataUtils {
   }
 
   public static Class<? extends InputFormat> getInputFormatClass(final JobConf job, final Table table, final Partition partition) {
-    try (final ContextClassLoaderSwapper cls = ContextClassLoaderSwapper.newInstance()) {
+    try (final Closeable cls = HivePf4jPlugin.swapClassLoader()) {
       if (partition != null) {
         if (partition.getSd().getInputFormat() != null) {
           return (Class<? extends InputFormat>) Class.forName(partition.getSd().getInputFormat());

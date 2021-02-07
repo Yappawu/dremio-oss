@@ -69,6 +69,7 @@ import com.dremio.resource.basic.BasicResourceAllocator;
 import com.dremio.sabot.rpc.user.UserSession;
 import com.dremio.service.DirectProvider;
 import com.dremio.service.coordinator.ClusterCoordinator;
+import com.dremio.service.coordinator.LocalExecutorSetService;
 import com.dremio.service.execselector.ExecutorSelectionService;
 import com.dremio.service.execselector.ExecutorSelectionServiceImpl;
 import com.dremio.service.execselector.ExecutorSelectorFactoryImpl;
@@ -130,6 +131,8 @@ public class ResourceAllocationsTest extends BaseTestQuery {
         OptionValue.createBoolean(OptionValue.OptionType.SYSTEM, ExecConstants.USE_NEW_MEMORY_BOUNDED_BEHAVIOR.getOptionName(), false)
       );
     final QueryContext queryContext = new QueryContext(session(), context, UserBitShared.QueryId.getDefaultInstance());
+    queryContext.setGroupResourceInformation(context.getClusterResourceInformation());
+
     final AttemptObserver observer = new PassthroughQueryObserver(ExecTest.mockUserClientConnection(null));
     final SqlConverter converter = new SqlConverter(
       queryContext.getPlannerSettings(),
@@ -164,10 +167,14 @@ public class ResourceAllocationsTest extends BaseTestQuery {
       DirectProvider.wrap(Mockito.mock(CatalogService.class)), context);
 
     Provider<ClusterCoordinator> clusterCoordinatorProvider = DirectProvider.wrap(clusterCoordinator);
-    Provider<OptionManager> optionProvider = DirectProvider.wrap(context.getOptionManager());
-    final BasicResourceAllocator resourceAllocator = new BasicResourceAllocator(clusterCoordinatorProvider);
+    Provider<OptionManager> optionManagerProvider = DirectProvider.wrap(context.getOptionManager());
+    final BasicResourceAllocator resourceAllocator =
+      new BasicResourceAllocator(clusterCoordinatorProvider, null);
     resourceAllocator.start();
-    final ExecutorSelectionService executorSelectionService = new ExecutorSelectionServiceImpl(clusterCoordinatorProvider, optionProvider,
+    final ExecutorSelectionService executorSelectionService = new ExecutorSelectionServiceImpl(
+        () -> new LocalExecutorSetService(clusterCoordinatorProvider,
+                                          optionManagerProvider),
+        optionManagerProvider,
         ExecutorSelectorFactoryImpl::new, new ExecutorSelectorProvider());
 
     QueryTrackerImpl foreman = new QueryTrackerImpl(null, queryContext, plan, pPlanReader,
@@ -180,7 +187,7 @@ public class ResourceAllocationsTest extends BaseTestQuery {
     final PlanningSet planningSet = executionPlanningResources.getPlanningSet();
 
     final ExecutionPlan exec = ExecutionPlanCreator.getExecutionPlan(queryContext, pPlanReader, AbstractMaestroObserver.NOOP, plan,
-        foreman.getResources(), planningSet, executorSelectionService);
+        foreman.getResources(), planningSet, executorSelectionService, null, executionPlanningResources.getGroupResourceInformation());
     List<PlanFragmentFull> fragments  = exec.getFragments();
 
     logger.info("Fragments size: " + fragments.size());
@@ -205,7 +212,7 @@ public class ResourceAllocationsTest extends BaseTestQuery {
 
     // copyAllocations should have one NodeEndPoint per major fragment
     final ExecutionPlan execUpdated = ExecutionPlanCreator.getExecutionPlan(queryContext, pPlanReader, AbstractMaestroObserver.NOOP, plan,
-        copyResourceSet, planningSet, executorSelectionService);
+        copyResourceSet, planningSet, executorSelectionService, null, executionPlanningResources.getGroupResourceInformation());
 
     fragments  = execUpdated.getFragments();
 
@@ -236,7 +243,7 @@ public class ResourceAllocationsTest extends BaseTestQuery {
 
     // copyAllocations should have one NodeEndPoint per major fragment
     final ExecutionPlan execUpdated2 = ExecutionPlanCreator.getExecutionPlan(queryContext, pPlanReader, AbstractMaestroObserver.NOOP, plan,
-        copyResourceSet2, planningSet, executorSelectionService);
+        copyResourceSet2, planningSet, executorSelectionService, null, executionPlanningResources.getGroupResourceInformation());
 
     fragments  = execUpdated2.getFragments();
 
@@ -258,7 +265,9 @@ public class ResourceAllocationsTest extends BaseTestQuery {
 
   private static UserSession session() {
     return UserSession.Builder.newBuilder()
-      .withSessionOptionManager(new SessionOptionManagerImpl(getSabotContext().getOptionManager()))
+      .withSessionOptionManager(
+        new SessionOptionManagerImpl(getSabotContext().getOptionValidatorListing()),
+        getSabotContext().getOptionManager())
       .withUserProperties(UserProtos.UserProperties.getDefaultInstance())
       .withCredentials(UserBitShared.UserCredentials.newBuilder().setUserName("foo").build())
       .setSupportComplexTypes(true)

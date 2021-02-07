@@ -41,9 +41,9 @@ import com.dremio.datastore.api.DocumentConverter;
 import com.dremio.datastore.api.DocumentWriter;
 import com.dremio.datastore.api.LegacyIndexedStore;
 import com.dremio.datastore.api.LegacyIndexedStore.LegacyFindByCondition;
+import com.dremio.datastore.api.LegacyIndexedStoreCreationFunction;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.dremio.datastore.api.LegacyStoreBuildingFactory;
-import com.dremio.datastore.api.LegacyStoreCreationFunction;
 import com.dremio.datastore.format.Format;
 import com.dremio.service.reflection.proto.ReflectionGoal;
 import com.dremio.service.reflection.proto.ReflectionGoalState;
@@ -180,13 +180,6 @@ public class ReflectionGoalsStore {
     }
   }
 
-  // Verify the given ReflectionGoal matches the given goal version from a separate KV Store.
-  // The goal version might have a copy of the tag from a pre-4.2.0 build of Dremio (prior to the
-  // KVStore interface changes that separated out the tag from the value).
-  public static boolean checkGoalVersion(ReflectionGoal goal, String expectedGoalVersion) {
-    Preconditions.checkNotNull(expectedGoalVersion);
-    return expectedGoalVersion.equals(goal.getTag()) || expectedGoalVersion.equals(String.valueOf(goal.getVersion()));
-  }
 
   private static final class StoreConverter implements DocumentConverter<ReflectionId, ReflectionGoal> {
     @Override
@@ -203,7 +196,7 @@ public class ReflectionGoalsStore {
   /**
    * Reflection user store creator
    */
-  public static class StoreCreator implements LegacyStoreCreationFunction<LegacyIndexedStore<ReflectionId, ReflectionGoal>> {
+  public static class StoreCreator implements LegacyIndexedStoreCreationFunction<ReflectionId, ReflectionGoal> {
 
     @Override
     public LegacyIndexedStore<ReflectionId, ReflectionGoal> build(LegacyStoreBuildingFactory factory) {

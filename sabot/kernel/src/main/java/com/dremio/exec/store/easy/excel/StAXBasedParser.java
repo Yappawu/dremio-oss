@@ -31,6 +31,7 @@ import java.util.Map;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.complex.impl.VectorContainerWriter;
 import org.apache.arrow.vector.complex.writer.BaseWriter.StructWriter;
 import org.apache.poi.openxml4j.opc.OPCPackage;
@@ -52,8 +53,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * Implements cursor based streaming XML parser for reading an excel sheet.
@@ -96,6 +95,7 @@ public class StAXBasedParser implements ExcelParser {
   private boolean lookupNextValueInSST;
   private MinorType valueTypeFromAttribute;
   private MinorType valueTypeFromStyle;
+  private boolean skipQuery;
   private final int maxCellSize;
 
   private Map<String, MinorType> styleToTypeCache = Maps.newHashMap();
@@ -106,7 +106,7 @@ public class StAXBasedParser implements ExcelParser {
   private final ColumnNameHandler columnNameHandler = new ColumnNameHandler();
 
   /* lookup table to find if a particular column is to be projected or not */
-  private HashSet<String> columnsToProject;
+  private final HashSet<String> columnsToProject;
 
   /**
    * Merge cell map. Key is the top-left cell in the merged region. Value is null if there is no merge cell
@@ -125,14 +125,18 @@ public class StAXBasedParser implements ExcelParser {
    * @param pluginConfig config options
    * @param writer {@link VectorContainerWriter} for writing values into vectors.
    * @param managedBuf Workspace buffer.
+   * @param skipQuery if a query should skip columns
    * @param maxCellSize maximum allowable size of variable length cells
    */
   public StAXBasedParser(final InputStream inputStream, final ExcelFormatPluginConfig pluginConfig,
                          final VectorContainerWriter writer, final ArrowBuf managedBuf,
-                         final HashSet<String> columnsToProject, final int maxCellSize) throws Exception {
-    pkgInputStream = OPCPackage.open(inputStream);
+                         final HashSet<String> columnsToProject, final boolean skipQuery,
+                         final int maxCellSize) throws Exception {
+    this.pkgInputStream = OPCPackage.open(inputStream);
     this.writer = writer.rootAsStruct();
     this.managedBuf = managedBuf;
+    this.columnsToProject = columnsToProject;
+    this.skipQuery = skipQuery;
     this.maxCellSize = maxCellSize;
 
     final XSSFReader xssfReader = new XSSFReader(pkgInputStream);
@@ -154,8 +158,6 @@ public class StAXBasedParser implements ExcelParser {
     styles = checkNotNull(xssfReader.getStylesTable(), "Expected a valid styles table instance");
 
     init(pluginConfig.extractHeader, pluginConfig.hasMergedCells);
-
-    this.columnsToProject = columnsToProject;
   }
 
   /**
@@ -431,7 +433,7 @@ public class StAXBasedParser implements ExcelParser {
 
       final String finalColumnName = columnNameHandler.getColumnName(currentColumnIndex);
 
-      final boolean isProjected = (columnsToProject == null) || columnsToProject.contains(finalColumnName);
+      final boolean projectedAndNotSkipQuery = !skipQuery && (columnsToProject == null || columnsToProject.contains(finalColumnName));
 
       final MergeCellRegion mergeCellRegion = mergeCells != null ? mergeCells.get(currentCellRef) : null;
 
@@ -439,7 +441,7 @@ public class StAXBasedParser implements ExcelParser {
         case BIT:
           final int toWrite = "1".equalsIgnoreCase(value) ? 1 : 0;
           indexToLastTypeCache.put(currentColumnIndex, valueTypeFromAttribute);
-          if(isProjected) {
+          if (projectedAndNotSkipQuery) {
             writer.bit(finalColumnName).writeBit(toWrite);
           }
           if (mergeCellRegion != null) {
@@ -452,7 +454,7 @@ public class StAXBasedParser implements ExcelParser {
           if (valueTypeFromStyle == MinorType.TIMESTAMP && DateUtil.isValidExcelDate(dValue)) {
             indexToLastTypeCache.put(currentColumnIndex, MinorType.TIMESTAMP);
             final long dateMillis = DateUtil.getJavaDate(dValue, false, LocaleUtil.TIMEZONE_UTC).getTime();
-            if(isProjected){
+            if (projectedAndNotSkipQuery) {
               writer.timeStampMilli(finalColumnName).writeTimeStampMilli(dateMillis);
             }
             if (mergeCellRegion != null) {
@@ -460,7 +462,7 @@ public class StAXBasedParser implements ExcelParser {
             }
           } else {
             indexToLastTypeCache.put(currentColumnIndex, valueTypeFromAttribute);
-            if(isProjected) {
+            if (projectedAndNotSkipQuery) {
               writer.float8(finalColumnName).writeFloat8(dValue);
             }
             if (mergeCellRegion != null) {
@@ -476,7 +478,7 @@ public class StAXBasedParser implements ExcelParser {
 
           managedBuf = managedBuf.reallocIfNeeded(b.length);
           managedBuf.setBytes(0, b);
-          if(isProjected) {
+          if (projectedAndNotSkipQuery) {
             writer.varChar(finalColumnName).writeVarChar(0, b.length, managedBuf);
           }
           if (mergeCellRegion != null) {

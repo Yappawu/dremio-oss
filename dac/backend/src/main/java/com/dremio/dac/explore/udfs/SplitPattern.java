@@ -24,6 +24,7 @@ import java.util.regex.Pattern;
 
 import javax.inject.Inject;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.writer.BaseWriter.ComplexWriter;
 import org.apache.arrow.vector.complex.writer.BaseWriter.ListWriter;
@@ -46,8 +47,6 @@ import com.dremio.exec.expr.annotations.Param;
 import com.dremio.exec.expr.annotations.Workspace;
 import com.dremio.exec.expr.fn.FunctionErrorContext;
 import com.dremio.exec.expr.fn.OutputDerivation;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * Functions to split string to list
@@ -172,8 +171,8 @@ public class SplitPattern {
         return;
       }
 
-      final int length = com.dremio.exec.expr.fn.impl.StringFunctionUtil.getUTF8CharLength(in
-        .buffer.asNettyBuffer(), in.start, in.end, errCtx);
+      final int length = com.dremio.exec.expr.fn.impl.StringFunctionUtil.getUTF8CharLength(io.netty.buffer.NettyArrowBuf.unwrapBuffer(in.buffer),
+        in.start, in.end, errCtx);
       final String v = com.dremio.exec.expr.fn.impl.StringFunctionHelpers.toStringFromUTF8(in.start, in.end, in.buffer);
 
       java.util.List<Match> matches = com.dremio.dac.explore.udfs.SplitPattern.splitRegex(matcher, v);

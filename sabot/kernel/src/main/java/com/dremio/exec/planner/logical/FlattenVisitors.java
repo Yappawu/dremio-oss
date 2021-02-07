@@ -70,6 +70,11 @@ public class FlattenVisitors {
     }
 
     @Override
+    public Boolean visitFieldAccess(RexFieldAccess fieldAccess) {
+      return fieldAccess.getReferenceExpr().accept(this);
+    }
+
+    @Override
     public Boolean visitLocalRef(RexLocalRef localRef) {
       return doUnknown(localRef);
     }
@@ -114,11 +119,6 @@ public class FlattenVisitors {
       return doUnknown(rangeRef);
     }
 
-    @Override
-    public Boolean visitFieldAccess(RexFieldAccess fieldAccess) {
-      return doUnknown(fieldAccess);
-    }
-
     private boolean doUnknown(Object o) {
       return false;
     }
@@ -159,8 +159,7 @@ public class FlattenVisitors {
       return totalCount.value;
     }
 
-
-    protected FlattenCounter() {
+    public FlattenCounter() {
       super(true);
     }
 
@@ -177,6 +176,11 @@ public class FlattenVisitors {
     @Override
     public Void visitInputRef(RexInputRef inputRef) {
       return null;
+    }
+
+    @Override
+    public Void visitFieldAccess(RexFieldAccess fieldAccess) {
+      return fieldAccess.getReferenceExpr().accept(this);
     }
 
     @Override
@@ -220,11 +224,6 @@ public class FlattenVisitors {
     @Override
     public Void visitRangeRef(RexRangeRef rangeRef) {
       return doUnknown(rangeRef);
-    }
-
-    @Override
-    public Void visitFieldAccess(RexFieldAccess fieldAccess) {
-      return doUnknown(fieldAccess);
     }
 
     private Void doUnknown(Object o) {

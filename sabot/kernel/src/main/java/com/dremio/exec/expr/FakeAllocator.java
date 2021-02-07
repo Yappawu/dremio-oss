@@ -19,11 +19,10 @@ import java.util.Collection;
 
 import org.apache.arrow.memory.AllocationListener;
 import org.apache.arrow.memory.AllocationReservation;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.BufferManager;
 
-import io.netty.buffer.ArrowBuf;
-import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocatorL;
 import io.netty.buffer.UnsafeDirectLittleEndian;
 
@@ -33,7 +32,7 @@ import io.netty.buffer.UnsafeDirectLittleEndian;
 public class FakeAllocator implements BufferAllocator {
 
   private static final UnsafeDirectLittleEndian emptyUdle = (new PooledByteBufAllocatorL()).empty;
-  private static ArrowBuf empty = new ArrowBuf(null, null, 0, 0, true);
+  private static ArrowBuf empty = new ArrowBuf(null, null, 0, 0);
   public static BufferAllocator INSTANCE = new FakeAllocator();
 
   private FakeAllocator() {}
@@ -60,11 +59,6 @@ public class FakeAllocator implements BufferAllocator {
 
   @Override
   public long getAllocatedMemory() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public ByteBufAllocator getAsByteBufAllocator() {
     throw new UnsupportedOperationException();
   }
 
@@ -136,5 +130,26 @@ public class FakeAllocator implements BufferAllocator {
   @Override
   public String toVerboseString() {
     throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public AllocationListener getListener() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void releaseBytes(long size) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public boolean forceAllocate(long size) {
+    throw new UnsupportedOperationException();
+
+  }
+
+  @Override
+  public BufferAllocator getRoot() {
+    return this;
   }
 }

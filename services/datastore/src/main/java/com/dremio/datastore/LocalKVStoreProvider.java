@@ -54,7 +54,7 @@ import com.google.common.collect.ImmutableMap;
  * Datastore provider for master node.
  */
 @KVStoreProviderType(type="LocalDB")
-public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWithId> {
+public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWithId<?, ?>> {
   private static final Logger logger = LoggerFactory.getLogger(LocalKVStoreProvider.class);
   public static final String CONFIG_HOSTNAME = "hostName";
   public static final String CONFIG_BASEDIRECTORY = "baseDirectory";
@@ -68,8 +68,11 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
   private final BufferAllocator allocator;
   private final String hostName;
   private final ScanResult scan;
+  // To provide compatibility with older code
+  private final LegacyKVStoreProvider legacyProvider;
+  private long remoteRpcTimeout;
 
-  private ImmutableMap<Class<? extends StoreCreationFunction<?>>, KVStore<?, ?>> stores;
+  private ImmutableMap<Class<? extends StoreCreationFunction<?, ?, ?>>, KVStore<?, ?>> stores;
 
   @VisibleForTesting
   public LocalKVStoreProvider(ScanResult scan, String baseDirectory, boolean inMemory, boolean timed) {
@@ -108,6 +111,7 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
     this.allocator = allocator;
     this.hostName = hostName;
     this.scan = scan;
+    this.legacyProvider = new LegacyKVStoreProviderAdapter(this);
   }
 
   public LocalKVStoreProvider(
@@ -127,8 +131,11 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
       Boolean.valueOf(Preconditions.checkNotNull(config.get(CONFIG_TIMED), String.format(ERR_FMT, CONFIG_TIMED)).toString()),
       false
     );
+
+    this.remoteRpcTimeout = (Long)config.get(DremioConfig.REMOTE_DATASTORE_RPC_TIMEOUT_SECS);
   }
 
+  @Override
   @VisibleForTesting
   public <K, V> StoreBuilder<K, V> newStore(){
     return new LocalStoreBuilder<>(coreStoreProvider.<K, V>newStore());
@@ -136,7 +143,7 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
 
   @SuppressWarnings("unchecked")
   @Override
-  public <T extends KVStore<?, ?>> T getStore(Class<? extends StoreCreationFunction<T>> creator) {
+  public <K, V, T extends KVStore<K, V>> T getStore(Class<? extends StoreCreationFunction<K, V, T>> creator) {
     return (T) Preconditions.checkNotNull(stores.get(creator), "Unknown store creator %s", creator.getName());
   }
 
@@ -170,12 +177,13 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
       try {
         // DatastoreRpcService registers itself with fabric
         //noinspection ResultOfObjectAllocationIgnored
-        new DatastoreRpcService(DirectProvider.wrap(thisNode), fabricService.get(), allocator, rpcHandler);
+        new DatastoreRpcService(DirectProvider.wrap(thisNode), fabricService.get(), allocator, rpcHandler, remoteRpcTimeout);
       } catch (RpcException e) {
         throw new DatastoreException("Failed to start rpc service", e);
       }
     }
 
+    legacyProvider.start();
 
     logger.info("LocalKVStoreProvider is up");
   }
@@ -185,13 +193,14 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
   }
 
   @Override
-  public Iterator<StoreWithId> iterator() {
+  public Iterator<StoreWithId<?, ?>> iterator() {
     return coreStoreProvider.iterator();
   }
 
   @Override
   public void close() throws Exception {
     logger.info("Stopping LocalKVStoreProvider");
+    legacyProvider.close();
     coreStoreProvider.close();
     logger.info("Stopped LocalKVStoreProvider");
   }
@@ -219,8 +228,16 @@ public class LocalKVStoreProvider implements KVStoreProvider, Iterable<StoreWith
     return coreStoreProvider.reIndex(id);
   }
 
+  /**
+   * Get a {@link LegacyKVStoreProvider} view of this provider
+   *
+   * Note that the provider has to be started first
+   *
+   * @return
+   */
+  @Deprecated
   public LegacyKVStoreProvider asLegacy() {
-    return new LegacyKVStoreProviderAdapter(this, scan);
+    return legacyProvider;
   }
 
   /**

@@ -19,23 +19,25 @@ import javax.inject.Provider;
 
 import org.apache.arrow.memory.BufferAllocator;
 
+import com.dremio.common.AutoCloseables;
 import com.dremio.exec.rpc.Acks;
 import com.dremio.exec.rpc.Response;
 import com.dremio.exec.rpc.ResponseSender;
 import com.dremio.exec.rpc.UserRpcException;
 import com.dremio.sabot.rpc.ExecToCoordResultsHandler;
+import com.dremio.service.grpc.CloseableBindableService;
 import com.dremio.service.jobresults.JobResultsRequest;
 import com.dremio.service.jobresults.JobResultsResponse;
 import com.dremio.service.jobresults.JobResultsServiceGrpc;
 
 import io.grpc.stub.StreamObserver;
 import io.netty.buffer.ByteBuf;
-
+import io.netty.buffer.NettyArrowBuf;
 
 /**
  * Job Results gRPC service.
  */
-public class JobResultsGrpcServerFacade extends JobResultsServiceGrpc.JobResultsServiceImplBase {
+public class JobResultsGrpcServerFacade extends JobResultsServiceGrpc.JobResultsServiceImplBase implements CloseableBindableService {
 
   private Provider<ExecToCoordResultsHandler> execToCoordResultsHandlerProvider;
   private final BufferAllocator allocator;
@@ -52,10 +54,11 @@ public class JobResultsGrpcServerFacade extends JobResultsServiceGrpc.JobResults
       @Override
       public void onNext(JobResultsRequest request) {
         try {
-          ByteBuf dBody = allocator.buffer(request.getData().size()).asNettyBuffer();
+          ByteBuf dBody = NettyArrowBuf.unwrapBuffer(allocator.buffer(request.getData().size()));
           dBody.writeBytes(request.getData().toByteArray());
-          execToCoordResultsHandlerProvider.get().dataArrived(request.getHeader(),
-            dBody, new JobResultsGrpcLocalResponseSender(responseObserver, request.getSequenceId()));
+
+          execToCoordResultsHandlerProvider.get().dataArrived(request.getHeader(), dBody, request,
+                  new JobResultsGrpcLocalResponseSender(responseObserver, request.getSequenceId()));
         } catch (Exception ex) {
           responseObserver.onError(ex);
         }
@@ -71,6 +74,11 @@ public class JobResultsGrpcServerFacade extends JobResultsServiceGrpc.JobResults
         responseObserver.onCompleted();
       }
     };
+  }
+
+  @Override
+  public void close() throws Exception {
+    AutoCloseables.close(allocator);
   }
 
   private static class JobResultsGrpcLocalResponseSender implements ResponseSender {

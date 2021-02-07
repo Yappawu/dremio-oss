@@ -15,6 +15,8 @@
  */
 package com.dremio.sabot.rpc.user;
 
+import static com.dremio.exec.proto.UserProtos.CreatePreparedStatementArrowReq;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -23,6 +25,7 @@ import java.util.UUID;
 import javax.inject.Provider;
 import javax.net.ssl.SSLException;
 
+import org.apache.arrow.memory.ArrowByteBufAllocator;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.calcite.avatica.util.Quoting;
 
@@ -72,6 +75,8 @@ import com.dremio.exec.work.foreman.TerminationListenerRegistry;
 import com.dremio.exec.work.protector.UserConnectionResponseHandler;
 import com.dremio.exec.work.protector.UserRequest;
 import com.dremio.exec.work.protector.UserWorker;
+import com.dremio.options.OptionManager;
+import com.dremio.options.OptionValidatorListing;
 import com.dremio.options.OptionValue;
 import com.dremio.options.OptionValue.OptionType;
 import com.dremio.service.users.UserLoginException;
@@ -126,16 +131,17 @@ public class UserRPCServer extends BasicServer<RpcType, UserRPCServer.UserClient
       BufferAllocator allocator,
       EventLoopGroup eventLoopGroup,
       InboundImpersonationManager impersonationManager,
-      Tracer tracer
+      Tracer tracer,
+      OptionValidatorListing optionValidatorListing
       ) {
-    super(rpcConfig, allocator.getAsByteBufAllocator(), eventLoopGroup);
+    super(rpcConfig, new ArrowByteBufAllocator(allocator), eventLoopGroup);
     this.userServiceProvider = userServiceProvider;
     this.nodeEndpointProvider = nodeEndpointProvider;
     this.workIngestor = workIngestor;
     this.worker = worker;
     this.allocator = allocator;
     this.impersonationManager = impersonationManager;
-    this.sessionOptionManagerFactory = new SessionOptionManagerFactoryImpl();
+    this.sessionOptionManagerFactory = new SessionOptionManagerFactoryImpl(optionValidatorListing);
     this.tracer = tracer;
   }
 
@@ -147,9 +153,10 @@ public class UserRPCServer extends BasicServer<RpcType, UserRPCServer.UserClient
     BufferAllocator allocator,
     EventLoopGroup eventLoopGroup,
     InboundImpersonationManager impersonationManager,
-    Tracer tracer
+    Tracer tracer,
+    OptionValidatorListing optionValidatorListing
   ) {
-    this(rpcConfig, userServiceProvider, nodeEndpointProvider, new WorkIngestorImpl(worker), worker, allocator, eventLoopGroup, impersonationManager, tracer);
+    this(rpcConfig, userServiceProvider, nodeEndpointProvider, new WorkIngestorImpl(worker), worker, allocator, eventLoopGroup, impersonationManager, tracer, optionValidatorListing);
   }
 
   @Override
@@ -369,6 +376,13 @@ public class UserRPCServer extends BasicServer<RpcType, UserRPCServer.UserClient
         break;
       }
 
+      case RpcType.CREATE_PREPARED_STATEMENT_ARROW_VALUE: {
+        final CreatePreparedStatementArrowReq req = parse(pBody, CreatePreparedStatementArrowReq.PARSER, CreatePreparedStatementArrowReq.class);
+        UserRequest request = new UserRequest(RpcType.CREATE_PREPARED_STATEMENT_ARROW, req);
+        worker.submitWork(connection.getSession(), new PreparedStatementProvider.PreparedStatementArrowHandler(responseSender), request, registry);
+        break;
+      }
+
       case RpcType.GET_SERVER_META_VALUE: {
         final GetServerMetaReq req = parse(pBody, GetServerMetaReq.PARSER, GetServerMetaReq.class);
         UserRequest request = new UserRequest(RpcType.GET_SERVER_META, req);
@@ -392,7 +406,7 @@ public class UserRPCServer extends BasicServer<RpcType, UserRPCServer.UserClient
     private final UUID uuid;
     private InetSocketAddress remote;
     private UserSession session;
-    private SessionOptionManager sessionOptionManager;
+    private OptionManager optionManager;
 
     public UserClientConnectionImpl(SocketChannel channel) {
       super(channel, "user client", false);
@@ -473,10 +487,10 @@ public class UserRPCServer extends BasicServer<RpcType, UserRPCServer.UserClient
             .setSupportComplexTypes(false);
       }
 
-      sessionOptionManager = sessionOptionManagerFactory.getOrCreate(uuid.toString(), UserRPCServer.this.worker.get().getSystemOptions());
+      SessionOptionManager sessionOptionManager = sessionOptionManagerFactory.getOrCreate(uuid.toString());
       builder
           .withCredentials(inbound.getCredentials())
-          .withSessionOptionManager(sessionOptionManager)
+          .withSessionOptionManager(sessionOptionManager, UserRPCServer.this.worker.get().getSystemOptions())
           .withUserProperties(inbound.getProperties())
           .setSupportComplexTypes(inbound.getSupportComplexTypes());
 
@@ -691,7 +705,7 @@ public class UserRPCServer extends BasicServer<RpcType, UserRPCServer.UserClient
   /**
    * Complete building the given builder for <i>BitToUserHandshake</i> message with given status and error details.
    *
-   * @param respBuilder Instance of {@link com.dremio.exec.proto.UserProtos.BitToUserHandshake} builder which
+   * @param respBuilder Instance of {@link BitToUserHandshake} builder which
    *                    has RPC version field already set.
    * @param status  Status of handling handshake request.
    * @param errMsg  Error message.

@@ -72,7 +72,9 @@ import com.dremio.dac.service.errors.DatasetNotFoundException;
 import com.dremio.dac.service.errors.DatasetVersionNotFoundException;
 import com.dremio.dac.service.errors.InvalidQueryException;
 import com.dremio.dac.service.errors.NewDatasetQueryException;
+import com.dremio.dac.util.InvalidQueryErrorConverter;
 import com.dremio.exec.record.BatchSchema;
+import com.dremio.exec.record.RecordBatchHolder;
 import com.dremio.exec.util.ViewFieldsHelper;
 import com.dremio.service.job.JobDetails;
 import com.dremio.service.job.JobDetailsRequest;
@@ -89,7 +91,6 @@ import com.dremio.service.jobs.JobNotFoundException;
 import com.dremio.service.jobs.JobStatusListener;
 import com.dremio.service.jobs.JobsProtoUtil;
 import com.dremio.service.jobs.JobsService;
-import com.dremio.service.jobs.RecordBatchHolder;
 import com.dremio.service.jobs.SqlQuery;
 import com.dremio.service.jobs.metadata.proto.QueryMetadata;
 import com.dremio.service.namespace.NamespaceException;
@@ -109,6 +110,8 @@ import io.protostuff.ByteString;
  * Class that helps with generating common dataset patterns.
  */
 public class DatasetTool {
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(DatasetTool.class);
+
   private final DatasetVersionMutator datasetService;
   private final JobsService jobsService;
   private final QueryExecutor executor;
@@ -137,10 +140,11 @@ public class DatasetTool {
       BufferAllocator allocator,
       VirtualDatasetUI newDataset,
       DatasetVersionResourcePath tipVersion,
-      Integer limit
+      Integer limit,
+      String engineName
       ) throws DatasetVersionNotFoundException, NamespaceException, JobNotFoundException {
 
-    SqlQuery query = new SqlQuery(newDataset.getSql(), newDataset.getState().getContextList(), username());
+    SqlQuery query = new SqlQuery(newDataset.getSql(), newDataset.getState().getContextList(), username(), engineName);
     JobData jobData = executor.runQueryWithListener(query, QueryType.UI_PREVIEW, tipVersion.getDataset(), newDataset.getVersion(), JobStatusListener.NO_OP);
 
     return createPreviewResponse(newDataset, jobData, tipVersion, allocator, limit, true);
@@ -421,11 +425,12 @@ public class DatasetTool {
     case PARSE:
     case PLAN:
     case VALIDATION:
+      String errorMessage = InvalidQueryErrorConverter.convert(e.getOriginalMessage());
       throw new InvalidQueryException(
           new InvalidQueryException.Details(
               sql,
               context,
-              QueryError.of(e), datasetSummary), e, e.getOriginalMessage());
+              QueryError.of(e), datasetSummary), e, errorMessage);
 
       default:
         return e;
@@ -454,6 +459,19 @@ public class DatasetTool {
       throws DatasetNotFoundException, DatasetVersionNotFoundException, NamespaceException, NewDatasetQueryException {
     return newUntitled(allocator, from, version, context, parentSummary, prepare, limit, false);
   }
+
+  public InitialPreviewResponse newUntitled(
+    BufferAllocator allocator,
+    FromBase from,
+    DatasetVersion version,
+    List<String> context,
+    DatasetSummary parentSummary,
+    boolean prepare,
+    Integer limit,
+    String engineName)
+    throws DatasetNotFoundException, DatasetVersionNotFoundException, NamespaceException, NewDatasetQueryException {
+    return newUntitled(allocator, from, version, context, parentSummary, prepare, limit, false, engineName);
+  }
   /**
    * Create a new untitled dataset, and load preview data.
    *
@@ -474,11 +492,12 @@ public class DatasetTool {
       DatasetSummary parentSummary,
       boolean prepare,
       Integer limit,
-      boolean runInSameThread)
+      boolean runInSameThread,
+      String engineName)
     throws DatasetNotFoundException, DatasetVersionNotFoundException, NamespaceException, NewDatasetQueryException {
 
     final VirtualDatasetUI newDataset = createNewUntitledMetadataOnly(from, version, context);
-    final SqlQuery query = new SqlQuery(newDataset.getSql(), newDataset.getState().getContextList(), username());
+    final SqlQuery query = new SqlQuery(newDataset.getSql(), newDataset.getState().getContextList(), username(), engineName);
 
     try {
       final MetadataCollectingJobStatusListener listener = new MetadataCollectingJobStatusListener();
@@ -514,7 +533,20 @@ public class DatasetTool {
     }
   }
 
-  VirtualDatasetUI createNewUntitledMetadataOnly(FromBase from,
+  public InitialPreviewResponse newUntitled(
+    BufferAllocator allocator,
+    FromBase from,
+    DatasetVersion version,
+    List<String> context,
+    DatasetSummary parentSummary,
+    boolean prepare,
+    Integer limit,
+    boolean runInSameThread)
+    throws DatasetNotFoundException, DatasetVersionNotFoundException, NamespaceException, NewDatasetQueryException {
+    return newUntitled(allocator, from, version, context, parentSummary, prepare, limit, runInSameThread, null);
+  }
+
+    VirtualDatasetUI createNewUntitledMetadataOnly(FromBase from,
                                                 DatasetVersion version,
                                                 List<String> context) {
     final DatasetPath datasetPath = TMP_DATASET_PATH;
@@ -525,11 +557,12 @@ public class DatasetTool {
 
   InitialRunResponse newUntitledAndRun(FromBase from,
                                        DatasetVersion version,
-                                       List<String> context)
+                                       List<String> context,
+                                       String engineName)
     throws DatasetNotFoundException, NamespaceException, DatasetVersionNotFoundException, InterruptedException {
 
     final VirtualDatasetUI newDataset = createNewUntitledMetadataOnly(from, version, context);
-    final SqlQuery query = new SqlQuery(newDataset.getSql(), newDataset.getState().getContextList(), username());
+    final SqlQuery query = new SqlQuery(newDataset.getSql(), newDataset.getState().getContextList(), username(), engineName);
 
     newDataset.setLastTransform(new Transform(TransformType.createFromParent).setTransformCreateFromParent(new TransformCreateFromParent(from.wrap())));
     MetadataCollectingJobStatusListener listener = new MetadataCollectingJobStatusListener();
@@ -553,6 +586,13 @@ public class DatasetTool {
       UserException uex = UserException.systemError(e).buildSilently();
       throw toInvalidQueryException(uex, query.getSql(), context);
     }
+  }
+
+  InitialRunResponse newUntitledAndRun(FromBase from,
+                                       DatasetVersion version,
+                                       List<String> context)
+    throws DatasetNotFoundException, NamespaceException, DatasetVersionNotFoundException, InterruptedException {
+    return newUntitledAndRun(from, version, context, null);
   }
 
   private void applyQueryMetaToDatasetAndSave(JobInfo jobInfo, QueryMetadata queryMetadata,
@@ -647,45 +687,56 @@ public class DatasetTool {
     tipVersion = tipVersion != null ? tipVersion : versionToMarkCurrent;
 
     final List<HistoryItem> historyItems = new ArrayList<>();
-    VirtualDatasetUI currentDataset;
+    VirtualDatasetUI currentDataset = null;
     DatasetVersion currentVersion = tipVersion;
     DatasetPath currentPath = datasetPath;
     NameDatasetRef previousVersion;
-    do {
-      currentDataset = datasetService.getVersion(currentPath, currentVersion);
-      DatasetVersionResourcePath versionedResourcePath =
+    try {
+      do {
+        currentDataset = datasetService.getVersion(currentPath, currentVersion);
+        DatasetVersionResourcePath versionedResourcePath =
           new DatasetVersionResourcePath(currentPath, currentVersion);
 
-      // grab the most recent job for this dataset version (note the use of limit 1 to avoid
-      // retrieving all results, the API just returns a list, so this also has to index into the returned list
-      // that will always contain a single element)
-      final SearchJobsRequest request = SearchJobsRequest.newBuilder()
-        .setDataset(VersionedDatasetPath.newBuilder()
-          .addAllPath(currentDataset.getFullPathList())
-          .setVersion(currentDataset.getVersion().getVersion())
-          .build())
-        .setLimit(1)
-        .build();
-      Iterable<JobSummary> jobSummaries = jobsService.searchJobs(request);
-      final JobState jobState;
-      // jobs are not persisted forever so we may not have a job for this version of the dataset
-      Iterator<JobSummary> iterator = jobSummaries.iterator();
-      if (iterator.hasNext()) {
-        jobState = JobsProtoUtil.toStuff(iterator.next().getJobState());
-      } else {
-        jobState = JobState.COMPLETED;
-      }
-      historyItems.add(
+        // grab the most recent job for this dataset version (note the use of limit 1 to avoid
+        // retrieving all results, the API just returns a list, so this also has to index into the returned list
+        // that will always contain a single element)
+        final SearchJobsRequest request = SearchJobsRequest.newBuilder()
+          .setDataset(VersionedDatasetPath.newBuilder()
+            .addAllPath(currentDataset.getFullPathList())
+            .setVersion(currentDataset.getVersion().getVersion())
+            .build())
+          .setLimit(1)
+          .build();
+        Iterable<JobSummary> jobSummaries = jobsService.searchJobs(request);
+        final JobState jobState;
+        // jobs are not persisted forever so we may not have a job for this version of the dataset
+        Iterator<JobSummary> iterator = jobSummaries.iterator();
+        if (iterator.hasNext()) {
+          jobState = JobsProtoUtil.toStuff(iterator.next().getJobState());
+        } else {
+          jobState = JobState.COMPLETED;
+        }
+        historyItems.add(
           new HistoryItem(versionedResourcePath, jobState,
-              TransformBase.unwrap(currentDataset.getLastTransform()).accept(new DescribeTransformation()), username(),
-              currentDataset.getCreatedAt(), 0L, true, null, null));
+            TransformBase.unwrap(currentDataset.getLastTransform()).accept(new DescribeTransformation()), username(),
+            currentDataset.getCreatedAt(), 0L, true, null, null));
 
-      previousVersion = currentDataset.getPreviousVersion();
-      if (previousVersion != null) {
-        currentVersion = new DatasetVersion(previousVersion.getDatasetVersion());
-        currentPath = new DatasetPath(previousVersion.getDatasetPath());
+        previousVersion = currentDataset.getPreviousVersion();
+        if (previousVersion != null) {
+          currentVersion = new DatasetVersion(previousVersion.getDatasetVersion());
+          currentPath = new DatasetPath(previousVersion.getDatasetPath());
+        }
+      } while (previousVersion != null);
+    } catch (DatasetNotFoundException e) {
+      // If for some reason the history chain is broken/corrupt, we will get an DatasetNotFoundException.  If we have a
+      // partial history, we return it.  If no history items are found, rethrow the exception.
+      if (currentDataset == null) {
+        throw e;
       }
-    } while (previousVersion != null);
+
+      logger.warn("Dataset history for [{}] and tip version [{}] is broken at path [{}] and version [{}]", datasetPath,
+        tipVersion, currentPath, currentVersion);
+    }
 
     Collections.reverse(historyItems);
 

@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable no-unused-vars */
 /*
  * Copyright (C) 2017-2019 Dremio Corporation
  *
@@ -19,12 +21,12 @@ import { render } from 'react-dom';
 import $ from 'jquery';
 import Immutable from 'immutable';
 
-import './vendor/chat';
-import './vendor/gtm';
 import sentryUtil from 'utils/sentryUtil';
 import startup from 'dyn-load/startup';
-import metrics from './metrics';
+import setupMetrics from '@inject/setupMetrics';
 
+import './vendor/chat';
+import './vendor/gtm';
 import 'imports-loader?this=>window!script-loader!jsplumb/dist/js/jsPlumb-2.1.4-min.js';
 import './main.less';
 // add css here to be sure that its content will appear after compiled main.less content.
@@ -37,12 +39,15 @@ import 'font-awesome/css/font-awesome.css';
 import Root from './containers/Root';
 import configureStore from './store/configureStore';
 
+// enable using mock data
+//import MirageServer from './MirageServer';
+
 // useful debugging leaks...
 window.React = React;
 window.$ = $;
 window.Immutable = Immutable;
 
-window.DremioMetrics = metrics;
+setupMetrics();
 
 window.la = (key) => {
   // (config.environment !== 'PRODUCTION') && console.warn('using unsupported localization function for:', key);

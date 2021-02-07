@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -57,7 +58,6 @@ import org.apache.calcite.rex.RexOver;
 import org.apache.calcite.rex.RexProgram;
 import org.apache.calcite.rex.RexSubQuery;
 import org.apache.calcite.rex.RexWindow;
-import org.apache.calcite.rex.WindowUtil;
 import org.apache.calcite.sql.JoinConditionType;
 import org.apache.calcite.sql.JoinType;
 import org.apache.calcite.sql.SqlAggFunction;
@@ -91,6 +91,7 @@ import org.apache.calcite.util.Pair;
 
 import com.dremio.common.dialect.DremioSqlDialect;
 import com.dremio.common.dialect.arp.transformer.CallTransformer;
+import com.dremio.common.rel2sql.utilities.OrderByAliasProcessor;
 import com.dremio.exec.planner.StatelessRelShuttleImpl;
 import com.dremio.exec.planner.common.ScanRelBase;
 import com.dremio.exec.planner.logical.ProjectRel;
@@ -109,8 +110,6 @@ import com.google.common.collect.ImmutableSet;
  * that can be converted to an RDBMS-specific dialect.
  */
 public class DremioRelToSqlConverter extends RelToSqlConverter {
-  private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(DremioRelToSqlConverter.class);
-
   private static final class SqlCharStringLiteralWithCollation extends SqlCharStringLiteral {
     private final SqlCollation collation;
 
@@ -141,6 +140,12 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
   };
 
   protected final Deque<DremioContext> outerQueryAliasContextStack = new ArrayDeque<>();
+
+  // A stack to keep track of window operators in the tree.
+  // This is used in builder as context information to figure out whether it needs a new subquery.
+  protected final Deque<RelNode> windowStack = new ArrayDeque<>();
+
+  private int projectLevel = 0;
 
   public DremioRelToSqlConverter(DremioSqlDialect dremioDialect) {
     super(dremioDialect);
@@ -294,11 +299,13 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
     final List<SqlNode> selectList = new ArrayList<>();
     for (RexNode ref : project.getChildExps()) {
       SqlNode sqlExpr = builder.context.toSql(null, simplifyDatetimePlus(ref, project.getCluster().getRexBuilder()));
-      if ((getDialect().shouldInjectNumericCastToProject() && isDecimal(ref.getType())) ||
-          (getDialect().shouldInjectApproxNumericCastToProject() && isApproximateNumeric(ref.getType()))) {
-        if (!((sqlExpr.getKind() == SqlKind.CAST) || (sqlExpr.getKind() == SqlKind.AS && ((SqlBasicCall) sqlExpr).operand(0).getKind() == SqlKind.CAST))) {
-          // Add an explicit cast around this projection.
-          sqlExpr = SqlStdOperatorTable.CAST.createCall(POS, sqlExpr, getDialect().getCastSpec(ref.getType()));
+      if (1 == projectLevel) {
+        if ((getDialect().shouldInjectNumericCastToProject() && isDecimal(ref.getType())) ||
+            (getDialect().shouldInjectApproxNumericCastToProject() && isApproximateNumeric(ref.getType()))) {
+          if (!((sqlExpr.getKind() == SqlKind.CAST) || (sqlExpr.getKind() == SqlKind.AS && ((SqlBasicCall) sqlExpr).operand(0).getKind() == SqlKind.CAST))) {
+            // Add an explicit cast around this projection.
+            sqlExpr = SqlStdOperatorTable.CAST.createCall(POS, sqlExpr, getDialect().getCastSpec(ref.getType()));
+          }
         }
       }
 
@@ -312,8 +319,13 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
   // Visitor overrides
   @Override
   public DremioRelToSqlConverter.Result visit(Project e) {
-    DremioRelToSqlConverter.Result x = (DremioRelToSqlConverter.Result) visitChild(0, e.getInput());
-    return processProjectChild(e, x);
+    ++projectLevel;
+    try {
+      DremioRelToSqlConverter.Result x = (DremioRelToSqlConverter.Result) visitChild(0, e.getInput());
+      return processProjectChild(e, x);
+    } finally {
+      --projectLevel;
+    }
   }
 
   /**
@@ -324,16 +336,15 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
     final DremioRelToSqlConverter.Result leftResult = (DremioRelToSqlConverter.Result) visitChild(0, e.getLeft()).resetAlias();
     final DremioRelToSqlConverter.Result rightResult = (DremioRelToSqlConverter.Result) visitChild(1, e.getRight()).resetAlias();
 
-    SqlNode sqlCondition = null;
-    SqlLiteral condType = JoinConditionType.ON.symbol(POS);
-    JoinType joinType = joinType(e.getJoinType());
+    final SqlLiteral condType = JoinConditionType.ON.symbol(POS);
+    final JoinType joinType = joinType(e.getJoinType());
     final Context leftContext = leftResult.qualifiedContext();
     final Context rightContext = rightResult.qualifiedContext();
     final Context joinContext = leftContext.implementor().joinContext(leftContext, rightContext);
     final RexNode condition = e.getCondition() == null ?
       null :
       this.simplifyDatetimePlus(e.getCondition(), e.getCluster().getRexBuilder());
-    sqlCondition = joinContext.toSql(null, condition);
+    final SqlNode sqlCondition = joinContext.toSql(null, condition);
 
     final SqlNode join =
       new SqlJoin(POS,
@@ -344,28 +355,6 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
         condType,
         sqlCondition);
     return result(join, leftResult, rightResult);
-  }
-
-  @Override
-  public SqlImplementor.Result visit(Window e) {
-    SqlImplementor.Result x = visitChild(0, e.getInput());
-    SqlImplementor.Builder builder = x.builder(e);
-    RelNode input = e.getInput();
-    List<RexOver> rexOvers = WindowUtil.getOver(e);
-
-    final List<SqlNode> selectList = new ArrayList<>();
-    final Set<String> fields = ImmutableSet.copyOf(e.getRowType().getFieldNames());
-    for (RelDataTypeField field : input.getRowType().getFieldList()) {
-      if (fields.contains(field.getName())) {
-        addSelect(selectList, builder.context.field(field.getIndex()), e.getRowType());
-      }
-    }
-
-    for (RexOver rexOver : rexOvers) {
-      addSelect(selectList, builder.context.toSql(null, rexOver), e.getRowType());
-    }
-    builder.setSelect(new SqlNodeList(selectList, POS));
-    return builder.result();
   }
 
   /**
@@ -741,7 +730,7 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
           final RexLiteral literal = (RexLiteral) rex;
 
           if (literal.getTypeName() == SqlTypeName.SYMBOL) {
-            final Enum symbol = (Enum) literal.getValue();
+            final Enum<?> symbol = (Enum<?>) literal.getValue();
             return SqlLiteral.createSymbol(symbol, SqlImplementor.POS);
           }
 
@@ -1030,9 +1019,13 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
 
           // If getting a character column, add the DBMS-specific collation object representing Dremio's
           // collation sequence to it.
-          final SqlCollation collation = field.getType().getSqlTypeName().getFamily() == SqlTypeFamily.CHARACTER ?
-            getDialect().getDefaultCollation(SqlKind.IDENTIFIER) :
-            null;
+          final SqlCollation collation;
+          if (field.getType().getSqlTypeName().getFamily() == SqlTypeFamily.CHARACTER && canAddCollation(field)) {
+            collation = getDialect().getDefaultCollation(SqlKind.IDENTIFIER);
+          } else {
+            collation = null;
+          }
+
           return new SqlIdentifier(!qualified && !getDremioRelToSqlConverter().isSubQuery() ?
             ImmutableList.of(field.getName()) :
             ImmutableList.of(alias.getKey(), field.getName()),
@@ -1190,11 +1183,17 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
       if (!needNew) {
         Set<Clause> nonWrapSet = ImmutableSet.of(Clause.SELECT);
         for (Clause clause : clauses) {
-          if (maxClause.ordinal() > clause.ordinal()
-            || (maxClause == clause && !nonWrapSet.contains(clause))) {
+          if (maxClause.ordinal() > clause.ordinal() || (maxClause == clause && !nonWrapSet.contains(clause))) {
             needNew = true;
+            break;
           }
         }
+      }
+
+      if (rel instanceof Project
+        && ((Project) rel).getInput() instanceof Window
+        && !windowStack.isEmpty()) {
+        needNew = true;
       }
 
       if (rel instanceof LogicalAggregate
@@ -1269,40 +1268,13 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
 
           if (node.getKind() == SqlKind.AS && pushUpOrderList != null) {
             // Update the referenced tables of the ORDER BY list to use the alias of the sub-select.
-            final String selectAlias = SqlValidatorUtil.getAlias(node, -1);
-            SqlNodeList updatedNodeList = new SqlNodeList(pushUpOrderList.getParserPosition());
-            for (SqlNode orderNode : pushUpOrderList.getList()) {
-              SqlBasicCall parent = null;
-              SqlNode child = orderNode;
-              if (child.getKind() == SqlKind.NULLS_FIRST ||
-                child.getKind() == SqlKind.NULLS_LAST) {
-                parent = (SqlBasicCall) child;
-                child = parent.operand(0);
-              }
 
-              if (child.getKind() == SqlKind.DESCENDING) {
-                parent = (SqlBasicCall) child;
-                child = parent.operand(0);
-              }
+            List<SqlNode> selectList = (selectClause.getSelectList() == null)?
+              Collections.emptyList() : selectClause.getSelectList().getList();
 
-              if (child.getKind() == SqlKind.IDENTIFIER) {
-                final SqlIdentifier identifier = (SqlIdentifier) child.clone(child.getParserPosition());
-
-                // Must make a copy.
-                final List<String> names = new ArrayList<>();
-                names.add(selectAlias);
-                names.add(identifier.names.get(identifier.names.size() - 1));
-                identifier.setNames(names, null);
-
-                if (parent != null) {
-                  parent.setOperand(0, identifier);
-                }
-              }
-
-              updatedNodeList.add(orderNode);
-            }
-
-            pushUpOrderList = updatedNodeList;
+            OrderByAliasProcessor processor = new OrderByAliasProcessor(
+              pushUpOrderList, SqlValidatorUtil.getAlias(node, -1), selectList);
+            pushUpOrderList = processor.processOrderBy();
           }
         }
       }
@@ -1388,7 +1360,7 @@ public class DremioRelToSqlConverter extends RelToSqlConverter {
       // already.
       final String tableAlias = SqlValidatorUtil.getAlias(node, -1);
       final List<SqlNode> selectList = new ArrayList<>();
-      ((SqlSelect) childNode).getSelectList().getList().stream().forEach(n -> {
+      ((SqlSelect) childNode).getSelectList().getList().forEach(n -> {
         String colAlias = SqlValidatorUtil.getAlias(n, -1);
         if (null == colAlias) {
           // Guard against possible null aliases being returned by generating a unique value.

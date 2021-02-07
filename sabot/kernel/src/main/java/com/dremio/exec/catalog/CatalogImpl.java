@@ -20,8 +20,14 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
@@ -32,26 +38,30 @@ import org.apache.calcite.schema.Function;
 import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.expression.CompleteType;
+import com.dremio.connector.ConnectorException;
 import com.dremio.connector.metadata.AttributeValue;
+import com.dremio.connector.metadata.DatasetHandle;
 import com.dremio.connector.metadata.EntityPath;
 import com.dremio.datastore.ProtostuffSerializer;
 import com.dremio.datastore.SearchQueryUtils;
-import com.dremio.datastore.SearchTypes.SearchQuery;
 import com.dremio.datastore.Serializer;
 import com.dremio.datastore.api.LegacyIndexedStore.LegacyFindByCondition;
 import com.dremio.exec.dotfile.View;
 import com.dremio.exec.physical.base.WriterOptions;
 import com.dremio.exec.planner.logical.CreateTableEntry;
+import com.dremio.exec.planner.logical.ViewTable;
 import com.dremio.exec.record.BatchSchema;
-import com.dremio.exec.server.options.SystemOptionManager;
 import com.dremio.exec.store.DatasetRetrievalOptions;
+import com.dremio.exec.store.NamespaceTable;
 import com.dremio.exec.store.PartitionNotFoundException;
 import com.dremio.exec.store.StoragePlugin;
 import com.dremio.exec.store.dfs.FileSystemPlugin;
 import com.dremio.exec.store.dfs.IcebergTableProps;
-import com.dremio.exec.store.ischema.tables.InfoSchemaTable;
-import com.dremio.exec.store.ischema.tables.SchemataTable.Schema;
-import com.dremio.exec.store.ischema.tables.TablesTable.Table;
+import com.dremio.options.OptionManager;
+import com.dremio.service.catalog.Schema;
+import com.dremio.service.catalog.SearchQuery;
+import com.dremio.service.catalog.Table;
+import com.dremio.service.catalog.TableSchema;
 import com.dremio.service.listing.DatasetListingService;
 import com.dremio.service.namespace.DatasetHelper;
 import com.dremio.service.namespace.DatasetIndexKeys;
@@ -64,6 +74,9 @@ import com.dremio.service.namespace.NamespaceService;
 import com.dremio.service.namespace.SourceState;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
 import com.dremio.service.namespace.dataset.proto.DatasetField;
+import com.dremio.service.namespace.dataset.proto.DatasetType;
+import com.dremio.service.namespace.dataset.proto.ParentDataset;
+import com.dremio.service.namespace.dataset.proto.VirtualDataset;
 import com.dremio.service.namespace.proto.NameSpaceContainer;
 import com.dremio.service.namespace.proto.NameSpaceContainer.Type;
 import com.dremio.service.namespace.source.proto.SourceConfig;
@@ -83,13 +96,14 @@ import io.protostuff.ByteString;
 public class CatalogImpl implements Catalog {
 
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(CatalogImpl.class);
+  private static final int MAX_RETRIES = 5;
 
   private final MetadataRequestOptions options;
   private final PluginRetriever pluginRetriever;
   private final CatalogServiceImpl.SourceModifier sourceModifier;
   private final String username;
 
-  private final SystemOptionManager optionManager;
+  private final OptionManager optionManager;
   private final NamespaceService systemNamespaceService;
   private final NamespaceService.Factory namespaceFactory;
   private final DatasetListingService datasetListingService;
@@ -97,12 +111,16 @@ public class CatalogImpl implements Catalog {
 
   private final NamespaceService userNamespaceService;
   private final DatasetManager datasets;
+  private final InformationSchemaCatalog iscDelegate;
+
+  private final Set<String> selectedSources;
+  private final boolean crossSourceSelectDisable;
 
   CatalogImpl(
       MetadataRequestOptions options,
       PluginRetriever pluginRetriever,
       CatalogServiceImpl.SourceModifier sourceModifier,
-      SystemOptionManager optionManager,
+      OptionManager optionManager,
       NamespaceService systemNamespaceService,
       NamespaceService.Factory namespaceFactory,
       DatasetListingService datasetListingService,
@@ -122,6 +140,10 @@ public class CatalogImpl implements Catalog {
     this.userNamespaceService = namespaceFactory.get(username);
 
     this.datasets = new DatasetManager(pluginRetriever, userNamespaceService, optionManager);
+    this.iscDelegate = new InformationSchemaCatalogImpl(userNamespaceService);
+
+    this.selectedSources = ConcurrentHashMap.newKeySet();
+    this.crossSourceSelectDisable = optionManager.getOption(CatalogOptions.DISABLE_CROSS_SOURCE_SELECT);
   }
 
   @Override
@@ -130,18 +152,22 @@ public class CatalogImpl implements Catalog {
   }
 
   @Override
-  public void deleteDataset(NamespaceKey datasetPath, String version) throws NamespaceException {
-    userNamespaceService.deleteDataset(datasetPath, version);
-  }
-
-  @Override
-  public DremioTable getTableNoResolve(NamespaceKey key) {
-    return datasets.getTable(key, options, false);
+  public DremioTable getTableNoResolve(NamespaceKey key)
+  {
+    final DremioTable t = datasets.getTable(key, options, false);
+    if (t != null) {
+      addUniqueSource(t);
+    }
+    return t;
   }
 
   @Override
   public DremioTable getTableNoColumnCount(NamespaceKey key) {
-    return datasets.getTable(key, options, true);
+    final DremioTable t = datasets.getTable(key, options, true);
+    if (t != null) {
+      addUniqueSource(t);
+    }
+    return t;
   }
 
   @Override
@@ -150,16 +176,98 @@ public class CatalogImpl implements Catalog {
     if (resolved != null) {
       final DremioTable t = datasets.getTable(resolved, options, false);
       if (t != null) {
+        addUniqueSource(t);
+        if (t instanceof ViewTable) {
+          View view = ((ViewTable) t).getView();
+          NamespaceKey viewPath = ((ViewTable) t).getPath();
+          try {
+            if (view.isFieldUpdated()) {
+              updateView(viewPath, view);
+            }
+          } catch (Exception ex) {
+            logger.warn("Failed to update view with updated nested schema: ", ex);
+          }
+        }
         return t;
       }
     }
-
-    return datasets.getTable(key, options, false);
+    final DremioTable t = datasets.getTable(key, options, false);
+    if (t != null) {
+      addUniqueSource(t);
+      if (t instanceof ViewTable) {
+        View view = ((ViewTable) t).getView();
+        NamespaceKey viewPath = ((ViewTable) t).getPath();
+        try {
+          if (view.isFieldUpdated()) {
+            updateView(viewPath, view);
+          }
+        } catch (Exception ex) {
+          logger.warn("Failed to update view with updated nested schema: ", ex);
+        }
+      }
+    }
+    return t;
   }
 
   @Override
   public DremioTable getTable(String datasetId) {
-    return datasets.getTable(datasetId, options);
+    final DremioTable t = datasets.getTable(datasetId, options);
+    if (t != null) {
+      addUniqueSource(t);
+    }
+    return t;
+  }
+
+  private void addUniqueSource(DremioTable t) {
+    if (!crossSourceSelectDisable) {
+      return;
+    }
+    if (t instanceof NamespaceTable) {
+      selectedSources.add(((NamespaceTable) t).getDatasetConfig().getFullPathList().get(0));
+    }
+    else if (t instanceof ViewTable) {
+      DatasetConfig ds = ((ViewTable) t).getDatasetConfig();
+      if (ds != null) {
+        expandSourceCheckParent(ds.getVirtualDataset().getParentsList());
+        expandSourceCheckParent(ds.getVirtualDataset().getGrandParentsList());
+      }
+    }
+  }
+
+  private void expandSourceCheckParent(List<ParentDataset> ps) {
+    if (ps != null) {
+      for (ParentDataset pd : ps) {
+        final String srcName = pd.getDatasetPathList().get(0);
+        final ManagedStoragePlugin plugin = pluginRetriever.getPlugin(srcName, false);
+        if (plugin != null) {
+          selectedSources.add(srcName);
+        }
+      }
+    }
+  }
+
+  @Override
+  public void validateSelection() {
+    if ((this.crossSourceSelectDisable) && (selectedSources.size() > 1)) {
+      final List<String> disallowedSources = new ArrayList<>();
+      for (String s : selectedSources) {
+        if (("sys".equalsIgnoreCase(s)) || ("INFORMATION_SCHEMA".equalsIgnoreCase(s))) {
+          continue;
+        }
+        final ManagedStoragePlugin plugin = pluginRetriever.getPlugin(s, false);
+        if (!plugin.getConfig().getAllowCrossSourceSelection()) {
+          disallowedSources.add(s);
+        }
+      }
+      if (disallowedSources.size() > 1) {
+        Collections.sort(disallowedSources);
+        final String str = disallowedSources.stream()
+          .collect(Collectors.joining("', '", "Cross select is disabled between sources '", "'."));
+        throw UserException.validationError()
+          .message(str)
+          .buildSilently();
+      }
+    }
   }
 
   @Override
@@ -229,27 +337,35 @@ public class CatalogImpl implements Catalog {
 
   @Override
   public Iterable<String> listSchemas(NamespaceKey path) {
-    final SearchQuery filter = path.size() == 0
-        ? null
-        : SearchQueryUtils.newTermQuery(DatasetIndexKeys.UNQUOTED_LC_SCHEMA, path.toUnescapedString().toLowerCase());
-    return FluentIterable.from(InfoSchemaTable.SCHEMATA.<Schema>asIterable("N/A", username, datasetListingService, filter))
-        .transform(new com.google.common.base.Function<Schema, String>() {
+    final SearchQuery searchQuery =
+      path.size() == 0 ? null : SearchQuery.newBuilder()
+        .setEquals(SearchQuery.Equals.newBuilder()
+          .setField(DatasetIndexKeys.UNQUOTED_LC_SCHEMA.getIndexFieldName())
+          .setStringValue(path.toUnescapedString().toLowerCase())
+          .build())
+        .build();
+    final Iterable<Schema> iterable = () -> listSchemata(searchQuery);
 
-          @Override
-          public String apply(Schema input) {
-            return input.SCHEMA_NAME;
-          }
-        });
+    return FluentIterable.from(iterable)
+        .transform(input -> input.getSchemaName());
   }
 
   @Override
   public Iterable<Table> listDatasets(NamespaceKey path) {
-    final SearchQuery filter = SearchQueryUtils.and(
-      SearchQueryUtils.newTermQuery(DatasetIndexKeys.UNQUOTED_LC_SCHEMA, path.toUnescapedString().toLowerCase()),
-      SearchQueryUtils.newTermQuery(NamespaceIndexKeys.ENTITY_TYPE.getIndexFieldName(), NameSpaceContainer.Type.DATASET.getNumber())
-    );
+    final SearchQuery searchQuery =
+      SearchQuery.newBuilder()
+        .setAnd(SearchQuery.And.newBuilder()
+          .addClauses(SearchQuery.newBuilder()
+            .setEquals(SearchQuery.Equals.newBuilder()
+              .setField(DatasetIndexKeys.UNQUOTED_LC_SCHEMA.getIndexFieldName())
+              .setStringValue(path.toUnescapedString().toLowerCase())))
+          .addClauses(SearchQuery.newBuilder()
+            .setEquals(SearchQuery.Equals.newBuilder()
+              .setField(NamespaceIndexKeys.ENTITY_TYPE.getIndexFieldName())
+              .setIntValue(NameSpaceContainer.Type.DATASET.getNumber()))))
+        .build();
 
-    return InfoSchemaTable.TABLES.<Table>asIterable("N/A", username, datasetListingService, filter);
+    return () -> listTables(searchQuery);
   }
 
   @Override
@@ -278,14 +394,9 @@ public class CatalogImpl implements Catalog {
 
     switch (getType(path, true)) {
       case SOURCE:
-        FileSystemPlugin plugin = asFSn(path);
-        if(plugin == null) {
-          return ImmutableList.of();
-        }
-        return plugin.getFunctions(path.getPathComponents(), options.getSchemaConfig());
+        return sourceModifier.getSource(path.getRoot()).getFunctions(path.getPathComponents(), options.getSchemaConfig());
 
       case HOME:
-
         try {
           return getHomeFilesPlugin().getFunctions(path.getPathComponents(), options.getSchemaConfig());
         } catch (ExecutionSetupException e) {
@@ -316,11 +427,37 @@ public class CatalogImpl implements Catalog {
   }
 
   @Override
-  public Catalog resolveCatalog(String username, NamespaceKey newDefaultSchema) {
+  public Catalog resolveCatalog(boolean checkValidity) {
     return new CatalogImpl(
-      options.cloneWith(username, newDefaultSchema),
+      options.cloneWith(options.getSchemaConfig().getUserName(), options.getSchemaConfig().getDefaultSchema(), checkValidity),
       pluginRetriever,
       sourceModifier,
+      optionManager,
+      systemNamespaceService,
+      namespaceFactory,
+      datasetListingService,
+      viewCreatorFactory);
+  }
+
+  @Override
+  public Catalog resolveCatalog(String username, NamespaceKey newDefaultSchema, boolean checkValidity) {
+    return new CatalogImpl(
+      options.cloneWith(username, newDefaultSchema, checkValidity),
+      pluginRetriever,
+      sourceModifier,
+      optionManager,
+      systemNamespaceService,
+      namespaceFactory,
+      datasetListingService,
+      viewCreatorFactory);
+  }
+
+  @Override
+  public Catalog resolveCatalog(String username, NamespaceKey newDefaultSchema) {
+    return new CatalogImpl(
+      options.cloneWith(username, newDefaultSchema, options.checkValidity()),
+      pluginRetriever,
+      sourceModifier.cloneWith(username),
       optionManager,
       systemNamespaceService,
       namespaceFactory,
@@ -331,9 +468,9 @@ public class CatalogImpl implements Catalog {
   @Override
   public Catalog resolveCatalog(String username) {
     return new CatalogImpl(
-      options.cloneWith(username, options.getSchemaConfig().getDefaultSchema()),
+      options.cloneWith(username, options.getSchemaConfig().getDefaultSchema(), options.checkValidity()),
       pluginRetriever,
-      sourceModifier,
+      sourceModifier.cloneWith(username),
       optionManager,
       systemNamespaceService,
       namespaceFactory,
@@ -344,9 +481,9 @@ public class CatalogImpl implements Catalog {
   @Override
   public Catalog resolveCatalog(NamespaceKey newDefaultSchema) {
     return new CatalogImpl(
-      options.cloneWith(username, newDefaultSchema),
+      options.cloneWith(username, newDefaultSchema, options.checkValidity()),
       pluginRetriever,
-      sourceModifier,
+      sourceModifier.cloneWith(username),
       optionManager,
       systemNamespaceService,
       namespaceFactory,
@@ -478,15 +615,6 @@ public class CatalogImpl implements Catalog {
     }
   }
 
-  private FileSystemPlugin asFSn(NamespaceKey key) {
-    final StoragePlugin plugin = sourceModifier.getSource(key.getRoot());
-    if (plugin instanceof FileSystemPlugin) {
-      return (FileSystemPlugin) plugin;
-    } else {
-      return null;
-    }
-  }
-
   private MutablePlugin asMutable(NamespaceKey key, String error) {
     StoragePlugin plugin = sourceModifier.getSource(key.getRoot());
     if (plugin instanceof MutablePlugin) {
@@ -506,6 +634,12 @@ public class CatalogImpl implements Catalog {
       throw new RuntimeException(ex);
     }
 
+    if (userNamespaceService.hasChildren(key)) {
+      throw UserException.validationError()
+        .message("Cannot drop table [%s] since it has child tables ", key)
+        .buildSilently();
+    }
+
     boolean isLayered = DatasetHelper.isIcebergDataset(dataset);
 
     asMutable(key, "does not support dropping tables")
@@ -516,6 +650,89 @@ public class CatalogImpl implements Catalog {
     } catch (NamespaceException e) {
       throw Throwables.propagate(e);
     }
+  }
+
+  private boolean isSystemTable(DatasetConfig config) {
+    // check if system tables and information schema.
+    final String root = config.getFullPathList().get(0);
+    if( ("sys").equals(root) || ("INFORMATION_SCHEMA").equals(root) ) {
+      return true;
+    }
+    return false;
+  }
+
+  private DatasetConfig getConfigFromNamespace(NamespaceKey key) {
+    try {
+      return userNamespaceService.getDataset(key);
+    } catch(NamespaceNotFoundException ex) {
+      return null;
+    } catch(NamespaceException ex) {
+      throw new RuntimeException(ex);
+    }
+  }
+
+  private DatasetConfig getConfigByCanonicalKey(NamespaceKey key) {
+
+    final ManagedStoragePlugin plugin = pluginRetriever.getPlugin(key.getRoot(), false);
+
+    if (plugin == null) {
+      return null;
+    }
+
+    final Optional<DatasetHandle> handle;
+    try {
+        handle = plugin.getDatasetHandle(key, null, plugin.getDefaultRetrievalOptions());
+    } catch (ConnectorException e) {
+        throw UserException.validationError(e)
+          .message("Failure while retrieving dataset [%s].", key)
+          .build(logger);
+    }
+
+    if (handle.isPresent()) {
+      final NamespaceKey canonicalKey = MetadataObjectsUtils.toNamespaceKey(handle.get().getDatasetPath());
+      if (!canonicalKey.equals(key)) {
+        // before we do anything with this accessor, we should reprobe namespace as it is possible that the request the
+        // user made was not the canonical key and therefore we missed when trying to retrieve data from the namespace.
+        return getConfigFromNamespace(canonicalKey);
+      }
+    }  // handle is present
+
+    return null;
+  }
+
+  @Override
+  public void forgetTable(NamespaceKey key) {
+
+    int count = 0;
+
+    while (true) {
+      DatasetConfig dataset;
+      dataset = getConfigFromNamespace(key);
+
+      if (dataset == null) {
+        // try to check if canonical key finds
+        dataset = getConfigByCanonicalKey(key);
+      } // passed-in key not found in kv
+
+      if(dataset == null || isSystemTable(dataset)) {
+        throw UserException.parseError().message("Unable to find table %s.", key).build(logger);
+      }
+
+      try {
+        userNamespaceService.deleteDataset(new NamespaceKey(dataset.getFullPathList()), dataset.getTag());
+        break;
+      } catch (NamespaceNotFoundException ex) {
+        logger.debug("Table to delete not found", ex);
+      } catch (ConcurrentModificationException ex) {
+        if (count++ < MAX_RETRIES) {
+          logger.debug("Concurrent failure.", ex);
+        } else {
+          throw ex;
+        }
+      } catch(NamespaceException ex) {
+        throw new RuntimeException(ex);
+      }
+    } // while loop
   }
 
   @Override
@@ -551,21 +768,50 @@ public class CatalogImpl implements Catalog {
    */
   @Override
   public boolean alterDataset(final NamespaceKey key, final Map<String, AttributeValue> attributes) {
+    final DatasetConfig datasetConfig;
+    try {
+      datasetConfig = systemNamespaceService.getDataset(key);
+      if (datasetConfig.getType() == DatasetType.VIRTUAL_DATASET) {
+        boolean changed = updateOptions(datasetConfig.getVirtualDataset(), attributes);
+        if (changed) {
+          // user userNamespaceService so that only those with "CAN EDIT" permission can make the change
+          userNamespaceService.addOrUpdateDataset(key, datasetConfig);
+        }
+        return changed;
+      }
+    } catch (NamespaceException | ConcurrentModificationException ex) {
+      throw UserException.validationError(ex)
+        .message("Failure while accessing dataset")
+        .buildSilently();
+    }
     final ManagedStoragePlugin plugin = pluginRetriever.getPlugin(key.getRoot(), true);
     if (plugin == null) {
       throw UserException.validationError()
                          .message("Unknown source [%s]", key.getRoot())
                          .buildSilently();
     }
-    final DatasetConfig datasetConfig;
-    try {
-      datasetConfig = systemNamespaceService.getDataset(key);
-    } catch (NamespaceException ex) {
-      throw UserException.validationError(ex)
-                         .message("Failure while retrieving dataset")
-                         .buildSilently();
-    }
     return plugin.alterDataset(key, datasetConfig, attributes);
+  }
+
+  private boolean updateOptions(VirtualDataset virtualDataset, Map<String, AttributeValue> attributes) {
+    boolean changed = false;
+    for (Entry<String,AttributeValue> attribute : attributes.entrySet()) {
+      switch (attribute.getKey().toLowerCase()) {
+      case "enable_default_reflection":
+        AttributeValue.BooleanValue value = (AttributeValue.BooleanValue) attribute.getValue();
+        boolean oldValue = Optional.ofNullable(virtualDataset.getDefaultReflectionEnabled()).orElse(true);
+        if (value.getValue() != oldValue) {
+          changed = true;
+          virtualDataset.setDefaultReflectionEnabled(value.getValue());
+        }
+        break;
+      default:
+        throw UserException.validationError()
+          .message("Unknown option [%s]", attribute.getKey())
+          .buildSilently();
+      }
+    }
+    return changed;
   }
 
   @Override
@@ -733,5 +979,30 @@ public class CatalogImpl implements Catalog {
 
   private enum SchemaType {
     SOURCE, SPACE, HOME, UNKNOWN
+  }
+
+  @Override
+  public Iterator<com.dremio.service.catalog.Catalog> listCatalogs(SearchQuery searchQuery) {
+    return iscDelegate.listCatalogs(searchQuery);
+  }
+
+  @Override
+  public Iterator<Schema> listSchemata(SearchQuery searchQuery) {
+    return iscDelegate.listSchemata(searchQuery);
+  }
+
+  @Override
+  public Iterator<com.dremio.service.catalog.Table> listTables(SearchQuery searchQuery) {
+    return iscDelegate.listTables(searchQuery);
+  }
+
+  @Override
+  public Iterator<com.dremio.service.catalog.View> listViews(SearchQuery searchQuery) {
+    return iscDelegate.listViews(searchQuery);
+  }
+
+  @Override
+  public Iterator<TableSchema> listTableSchemata(SearchQuery searchQuery) {
+    return iscDelegate.listTableSchemata(searchQuery);
   }
 }

@@ -26,9 +26,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
-import com.dremio.common.util.MayExpire;
+import com.dremio.common.nodes.EndpointHelper;
 import com.dremio.common.utils.protos.QueryIdHelper;
-import com.dremio.exec.physical.base.EndpointHelper;
 import com.dremio.exec.proto.CoordExecRPC.ExecutorQueryProfile;
 import com.dremio.exec.proto.CoordExecRPC.FragmentStatus;
 import com.dremio.exec.proto.CoordExecRPC.NodeQueryCompletion;
@@ -56,7 +55,7 @@ import io.grpc.stub.StreamObserver;
 /**
  * Tracker for one query in the local Proxy for the maestro service.
  */
-class MaestroProxyQueryTracker implements MayExpire {
+class MaestroProxyQueryTracker implements QueryTracker {
   private static final org.slf4j.Logger logger =
     org.slf4j.LoggerFactory.getLogger(MaestroProxyQueryTracker.class);
   private static final int INITIAL_BACKOFF_MILLIS = 5;
@@ -78,10 +77,23 @@ class MaestroProxyQueryTracker implements MayExpire {
   private NodeEndpoint foreman;
   private long expirationTime;
   private boolean resultsSent;
-  private DremioPBError error;
+  private DremioPBError firstErrorInQuery;
   private FragmentHandle errorFragmentHandle;
   private volatile boolean foremanDead;
   private AtomicInteger pendingMessages = new AtomicInteger(0);
+  private Set<FragmentHandle> pendingFragments = null;
+
+  /**
+   * Initialize with the set of fragment handles for the query before
+   * starting the query.
+   * @param pendingFragments
+   */
+  @Override
+  public void initFragmentsForQuery(Set<FragmentHandle> pendingFragments) {
+    Preconditions.checkState(pendingFragments != null && pendingFragments.size() > 0, "Pending " +
+      "fragments should be non empty.");
+    this.pendingFragments = pendingFragments;
+  }
 
   enum State {
     INVALID,
@@ -108,10 +120,11 @@ class MaestroProxyQueryTracker implements MayExpire {
    * @param maestroServiceClient client to maestro service
    * @return true if query can be started.
    */
-  synchronized boolean tryStart(QueryTicket queryTicket,
-                                NodeEndpoint foreman,
-                                MaestroClient maestroServiceClient,
-                                JobTelemetryExecutorClient jobTelemetryClient) {
+  @Override
+  public synchronized boolean tryStart(QueryTicket queryTicket,
+                                       NodeEndpoint foreman,
+                                       MaestroClient maestroServiceClient,
+                                       JobTelemetryExecutorClient jobTelemetryClient) {
     if (state != State.INVALID) {
       // query already started, probably a duplicate request.
       return false;
@@ -128,16 +141,19 @@ class MaestroProxyQueryTracker implements MayExpire {
     return true;
   }
 
-  synchronized boolean isStarted() {
+  @Override
+  public synchronized boolean isStarted() {
     return state != State.INVALID;
   }
 
-  synchronized void setCancelled() {
+  @Override
+  public synchronized void setCancelled() {
     cancelled = true;
     expirationTime = System.currentTimeMillis() + evictionDelayMillis;
   }
 
-  synchronized boolean isCancelled() {
+  @Override
+  public synchronized boolean isCancelled() {
     return this.cancelled;
   }
 
@@ -155,7 +171,8 @@ class MaestroProxyQueryTracker implements MayExpire {
 
   }
 
-  synchronized void refreshFragmentStatus(FragmentStatus fragmentStatus) {
+  @Override
+  public synchronized void refreshFragmentStatus(FragmentStatus fragmentStatus) {
     final FragmentHandle handle = fragmentStatus.getHandle();
     FragmentStatus prevStatus = lastFragmentStatuses.get(handle);
     if (prevStatus != null && isTerminal(prevStatus.getProfile().getState())) {
@@ -163,28 +180,36 @@ class MaestroProxyQueryTracker implements MayExpire {
       return;
     }
 
-    lastFragmentStatuses.put(handle, fragmentStatus);
+    FragmentStatus fragmentStatusToSave = clearProfileError(fragmentStatus);
+    lastFragmentStatuses.put(handle, fragmentStatusToSave);
   }
 
-  Optional<ListenableFuture<Empty>> sendQueryProfile() {
+  @Override
+  public Optional<ListenableFuture<Empty>> sendQueryProfile() {
     ExecutorQueryProfile profile;
 
     synchronized (this) {
       if (state == State.DONE) {
         return Optional.empty();
       }
-      Preconditions.checkState(queryTicket != null);
-
-      List<FragmentStatus> fragmentStatuses = new ArrayList<>(lastFragmentStatuses.values());
-      profile = ExecutorQueryProfile.newBuilder()
-        .setQueryId(queryId)
-        .setEndpoint(selfEndpoint)
-        .setProgress(buildProgressMetrics(fragmentStatuses))
-        .setNodeStatus(queryTicket.getStatus())
-        .addAllFragments(fragmentStatuses)
-        .build();
+      profile = getExecutorQueryProfile();
     }
     return Optional.of(jobTelemetryClient.putExecutorProfile(profile));
+  }
+
+  private ExecutorQueryProfile getExecutorQueryProfile() {
+    ExecutorQueryProfile profile;
+    Preconditions.checkState(queryTicket != null);
+
+    List<FragmentStatus> fragmentStatuses = new ArrayList<>(lastFragmentStatuses.values());
+    profile = ExecutorQueryProfile.newBuilder()
+      .setQueryId(queryId)
+      .setEndpoint(selfEndpoint)
+      .setProgress(buildProgressMetrics(fragmentStatuses))
+      .setNodeStatus(queryTicket.getStatus())
+      .addAllFragments(fragmentStatuses)
+      .build();
+    return profile;
   }
 
   static private QueryProgressMetrics buildProgressMetrics(List<FragmentStatus> fragmentStatuses) {
@@ -202,11 +227,31 @@ class MaestroProxyQueryTracker implements MayExpire {
   }
 
   /**
+   * Error from any one of the the MinorFragmentProfile is sufficient to end the query and return the
+   * error to the callers. So, once an error from a profile is captured in firstErrorInQuery, errors from other
+   * profiles can be cleared. Clearing the errors from profiles helps not consuming heap memory when the
+   * error messages are too long especially when the error messages are due to insufficient heap memory.
+   */
+  private FragmentStatus clearProfileError(FragmentStatus fragmentStatus) {
+    FragmentStatus newFragmentStatus = fragmentStatus;
+    if (firstErrorInQuery != null && fragmentStatus.getProfile().getError() != null) {
+      MinorFragmentProfile.Builder profileBuilder = fragmentStatus.getProfile().toBuilder();
+      profileBuilder.clearError();
+      newFragmentStatus = fragmentStatus.toBuilder().setProfile(profileBuilder.build()).build();
+    }
+    return newFragmentStatus;
+  }
+
+  /**
    * Handle the status change of one fragment.
    *
    * @param fragmentStatus
    */
-  void fragmentStatusChanged(FragmentStatus fragmentStatus) {
+  @Override
+  public void fragmentStatusChanged(FragmentStatus fragmentStatus) {
+    Preconditions.checkState(pendingFragments != null, "Pending fragments should have been " +
+      "registered before starting the query.");
+
     final FragmentHandle handle = fragmentStatus.getHandle();
     final MinorFragmentProfile profile = fragmentStatus.getProfile();
 
@@ -215,27 +260,31 @@ class MaestroProxyQueryTracker implements MayExpire {
     synchronized (this) {
       switch (profile.getState()) {
         case FAILED:
-          if (error == null) {
-            error = profile.getError();
+          if (firstErrorInQuery == null) {
+            firstErrorInQuery = profile.getError();
             errorFragmentHandle = fragmentStatus.getHandle();
 
             // propagate the first error.
             firstError = NodeQueryFirstError.newBuilder()
               .setHandle(handle)
               .setEndpoint(selfEndpoint)
-              .setError(error)
+              .setForeman(foreman)
+              .setError(firstErrorInQuery)
               .build();
           }
           // fall-through
 
         case CANCELLED:
         case FINISHED:
-          lastFragmentStatuses.put(handle, fragmentStatus);
+          FragmentStatus fragmentStatusToSave = clearProfileError(fragmentStatus);
+          lastFragmentStatuses.put(handle, fragmentStatusToSave);
+          pendingFragments.remove(fragmentStatus.getHandle());
           if (handle.getMajorFragmentId() == 0 && profile.getState() == FragmentState.FINISHED) {
             // operator with screen finished.
             screenCompletion = NodeQueryScreenCompletion.newBuilder()
               .setId(handle.getQueryId())
               .setEndpoint(selfEndpoint)
+              .setForeman(foreman)
               .build();
           }
           checkIfResultsSent(fragmentStatus);
@@ -252,6 +301,8 @@ class MaestroProxyQueryTracker implements MayExpire {
       Consumer<StreamObserver<Empty>> consumer =
         observer -> {
           try {
+            logger.debug("sending screen completion to foreman {}:{}",
+              foreman.getAddress(), foreman.getFabricPort());
             maestroServiceClient.screenComplete(completion, observer);
           } catch (Exception e) {
             observer.onError(e);
@@ -264,6 +315,8 @@ class MaestroProxyQueryTracker implements MayExpire {
       Consumer<StreamObserver<Empty>> consumer =
         observer -> {
           try {
+            logger.debug("sending fragment error to foreman {}:{}",
+              foreman.getAddress(), foreman.getFabricPort());
             maestroServiceClient.nodeFirstError(error, observer);
           } catch (Exception e) {
             observer.onError(e);
@@ -277,29 +330,38 @@ class MaestroProxyQueryTracker implements MayExpire {
     if (state != State.STARTED) {
       return;
     }
-
-    if (queryTicket.hasActivePhaseTickets()) {
+    // thread safe - caller is synchronized, so last update
+    // will make the set empty
+    if (!pendingFragments.isEmpty()) {
       return;
     }
 
     // This is required so that all of the final metrics are reflected accurately.
-    sendQueryProfile();
+    ExecutorQueryProfile finalQueryProfile = getExecutorQueryProfile();
+    sendNodeCompletion(finalQueryProfile);
+  }
 
+
+  public void sendNodeCompletion(ExecutorQueryProfile finalQueryProfile) {
     state = State.DONE;
     lastFragmentStatuses.clear(); // not required any more.
     queryTicket = null;
-    sendCompletionMessage();
+    sendCompletionMessage(finalQueryProfile);
+    firstErrorInQuery = null;
   }
 
-  private void sendCompletionMessage() {
+  private void sendCompletionMessage(ExecutorQueryProfile finalQueryProfile) {
     // all fragments are completed.
     final NodeQueryCompletion.Builder completionBuilder =
         NodeQueryCompletion.newBuilder()
             .setId(queryId)
             .setEndpoint(selfEndpoint)
-            .setResultsSent(resultsSent);
-    if (error != null) {
-      completionBuilder.setFirstError(error);
+            .setForeman(foreman)
+            .setResultsSent(resultsSent)
+            .setFinalNodeQueryProfile(finalQueryProfile);
+
+    if (firstErrorInQuery != null) {
+      completionBuilder.setFirstError(firstErrorInQuery);
       completionBuilder.setErrorMajorFragmentId(errorFragmentHandle.getMajorFragmentId());
       completionBuilder.setErrorMinorFragmentId(errorFragmentHandle.getMinorFragmentId());
     }
@@ -309,6 +371,8 @@ class MaestroProxyQueryTracker implements MayExpire {
     Consumer<StreamObserver<Empty>> consumer =
       observer -> {
         try {
+          logger.debug("sending node completion message to foreman {}:{}",
+            foreman.getAddress(), foreman.getFabricPort());
           maestroServiceClient.nodeQueryComplete(completion, observer);
         } catch (Exception e) {
           observer.onError(e);
@@ -365,8 +429,8 @@ class MaestroProxyQueryTracker implements MayExpire {
       } else {
         // retry with back-off
         backoffMillis = Integer.min(backoffMillis * 2, MAX_BACKOFF_MILLIS);
-        logger.info("sending failure for query {} to maestro failed, will retry after " +
-          "backoff {} ms", QueryIdHelper.getQueryId(queryId), backoffMillis);
+        logger.warn("sending failure for query {} to maestro failed, will retry after " +
+          "backoff {} ms", QueryIdHelper.getQueryId(queryId), backoffMillis, throwable);
         retryExecutor.schedule(() -> retryFunction.accept(this), backoffMillis,
           TimeUnit.MILLISECONDS);
       }

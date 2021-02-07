@@ -20,21 +20,20 @@ import static org.junit.Assert.assertTrue;
 import java.util.Arrays;
 import java.util.Random;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.junit.After;
 import org.junit.Before;
 
 import com.dremio.common.AutoCloseables;
+import com.dremio.common.concurrent.CloseableThreadPool;
 import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
 import com.dremio.exec.proto.UserBitShared.QueryId;
-import com.dremio.exec.rpc.CloseableThreadPool;
 import com.dremio.exec.rpc.RpcException;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.protobuf.Internal.EnumLite;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * A basic framework for registering and testing new rpc protocols.

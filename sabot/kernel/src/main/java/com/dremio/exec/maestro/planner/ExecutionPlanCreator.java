@@ -19,6 +19,7 @@ import java.io.InputStream;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.common.exceptions.UserException;
@@ -42,6 +43,7 @@ import com.dremio.exec.util.MemoryAllocationUtilities;
 import com.dremio.exec.work.foreman.ExecutionPlan;
 import com.dremio.options.OptionList;
 import com.dremio.options.OptionManager;
+import com.dremio.resource.GroupResourceInformation;
 import com.dremio.resource.ResourceSchedulingDecisionInfo;
 import com.dremio.resource.ResourceSet;
 import com.dremio.resource.basic.BasicResourceConstants;
@@ -66,16 +68,15 @@ public class ExecutionPlanCreator {
 
     final Root rootOperator = plan.getRoot();
     final Fragment rootFragment = rootOperator.accept(MakeFragmentsVisitor.INSTANCE, null);
-    final SimpleParallelizer parallelizer = new SimpleParallelizer(queryContext, observer, executorSelectionService,
-      resourceSchedulingDecisionInfo);
 
     observer.planParallelStart();
     final Stopwatch stopwatch = Stopwatch.createStarted();
-    final ExecutionPlanningResources resources = parallelizer.getFragmentsHelper(rootFragment);
-    observer.planParallelized(resources.getPlanningSet());
+    final ExecutionPlanningResources executionPlanningResources = SimpleParallelizer.getExecutionPlanningResources(queryContext, observer, executorSelectionService,
+      resourceSchedulingDecisionInfo, rootFragment);
+    observer.planParallelized(executionPlanningResources.getPlanningSet());
     stopwatch.stop();
     observer.planAssignmentTime(stopwatch.elapsed(TimeUnit.MILLISECONDS));
-    return resources;
+    return executionPlanningResources;
   }
 
   public static ExecutionPlan getExecutionPlan(
@@ -85,13 +86,16 @@ public class ExecutionPlanCreator {
     final PhysicalPlan plan,
     ResourceSet allocationSet,
     PlanningSet planningSet,
-    ExecutorSelectionService executorSelectionService
+    ExecutorSelectionService executorSelectionService,
+    ResourceSchedulingDecisionInfo resourceSchedulingDecisionInfo,
+    GroupResourceInformation groupResourceInformation
   ) throws ExecutionSetupException {
 
     final Root rootOperator = plan.getRoot();
     final Fragment rootOperatorFragment = rootOperator.accept(MakeFragmentsVisitor.INSTANCE, null);
 
-    final SimpleParallelizer parallelizer = new SimpleParallelizer(queryContext, observer, executorSelectionService);
+    final SimpleParallelizer parallelizer = new SimpleParallelizer(queryContext,
+      observer, executorSelectionService, resourceSchedulingDecisionInfo, groupResourceInformation);
     final long queryPerNodeFromResourceAllocation =  allocationSet.getPerNodeQueryMemoryLimit();
     planningSet.setMemoryAllocationPerNode(queryPerNodeFromResourceAllocation);
 
@@ -99,12 +103,12 @@ public class ExecutionPlanCreator {
     MemoryAllocationUtilities.setupBoundedMemoryAllocations(
         plan,
         queryContext.getOptions(),
-        queryContext.getClusterResourceInformation(),
+        groupResourceInformation,
         planningSet,
         queryPerNodeFromResourceAllocation);
 
     // pass all query, session and non-default system options to the fragments
-    final OptionList fragmentOptions = queryContext.getNonDefaultOptions();
+    final OptionList fragmentOptions = filterDCSControlOptions(queryContext.getNonDefaultOptions());
 
     // index repetitive items to reduce rpc size.
     final PlanFragmentsIndex.Builder indexBuilder = new PlanFragmentsIndex.Builder();
@@ -155,6 +159,11 @@ public class ExecutionPlanCreator {
       }
 
       @Override
+      public ExecutorSelectionHandle getAllActiveExecutors(ExecutorSelectionContext executorSelectionContext) {
+        return new ExecutorSelectionHandleImpl(endpoints);
+      }
+
+      @Override
       public void start() throws Exception {
       }
 
@@ -164,7 +173,7 @@ public class ExecutionPlanCreator {
     };
     final SimpleParallelizer parallelizer = new SimpleParallelizer(queryContext, observer, executorSelectionService);
     // pass all query, session and non-default system options to the fragments
-    final OptionList fragmentOptions = queryContext.getNonDefaultOptions();
+    final OptionList fragmentOptions = filterDCSControlOptions(queryContext.getNonDefaultOptions());
 
     CoordExecRPC.QueryContextInformation queryContextInformation = queryContext.getQueryContextInfo();
 
@@ -197,6 +206,19 @@ public class ExecutionPlanCreator {
     traceFragments(queryContext, planFragments);
 
     return new ExecutionPlan(queryContext.getQueryId(), plan, planFragments, indexBuilder);
+  }
+
+  // remove any dcs control options; these will not be present in executor image
+  private static OptionList filterDCSControlOptions(OptionList nonDefaultSystemOptions) {
+    OptionList nonDCSControlOptions = new OptionList();
+    nonDCSControlOptions.addAll(nonDefaultSystemOptions.stream().filter(option -> {
+        if (option.getName().startsWith("dcs.control")) {
+          return false;
+        }
+        return true;
+      }
+    ).collect(Collectors.toList()));
+    return nonDCSControlOptions;
   }
 
   private static void traceFragments(QueryContext queryContext, List<PlanFragmentFull> fullPlanFragments) {

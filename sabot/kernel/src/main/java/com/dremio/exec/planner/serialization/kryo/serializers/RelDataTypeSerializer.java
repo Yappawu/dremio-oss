@@ -15,8 +15,11 @@
  */
 package com.dremio.exec.planner.serialization.kryo.serializers;
 
+import java.util.AbstractList;
+
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.rel.type.RelRecordType;
 
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.Serializer;
@@ -32,6 +35,10 @@ public class RelDataTypeSerializer<T extends RelDataType> extends Serializer<T> 
   protected RelDataTypeSerializer(final Kryo kryo, final Class type, final RelDataTypeFactory typeFactory) {
     this.typeFactory = Preconditions.checkNotNull(typeFactory, "factory is required");
     this.delegate = new FieldSerializer<>(kryo, type);
+    if (type.isAssignableFrom(RelRecordType.class)) {
+      // Exclude "nullable" field in serializer. Including this field in serializer causes compatibility issue.
+      delegate.removeField("nullable");
+    }
   }
 
   @Override
@@ -48,8 +55,32 @@ public class RelDataTypeSerializer<T extends RelDataType> extends Serializer<T> 
       fields[i].read(input, dataType);
     }
 
-    // be gentle to calcite and normalize the returned data type. normalization here means to use same type instances.
-    final T result = (T) typeFactory.copyType(dataType);
+    T result;
+    if (dataType instanceof RelRecordType) {
+      // We serialized this type disregarding nullable property.
+      // Therefore, digest string for this may be inconsistent with nullability which is always false by default,
+      // and saving this object to cache will generate incorrect matches.
+      // Recreate recordType and match nullability.
+      final RelDataType relRecordType = typeFactory.createStructType(dataType.getStructKind(),
+          new AbstractList<RelDataType>() {
+            @Override
+            public RelDataType get(int index) {
+              return dataType.getFieldList().get(index).getType();
+            }
+
+            @Override
+            public int size() {
+              return dataType.getFieldCount();
+            }
+          },
+          dataType.getFieldNames());
+      final String digest = dataType.getFullTypeString();
+      boolean nullable = digest != null ? !digest.endsWith("NOT NULL") : true;
+      result = (T) typeFactory.createTypeWithNullability(relRecordType, nullable);
+    } else {
+      result = (T) typeFactory.copyType(dataType);
+    }
+
     kryo.reference(result);
     return result;
   }

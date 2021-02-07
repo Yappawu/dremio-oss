@@ -92,7 +92,9 @@ public class TestLocalExchange extends PlanTestBase {
   private final static String DEMUX_EXCHANGE_CONST = "unordered-demux-exchange";
   private static final String HASH_EXCHANGE = "hash-to-random-exchange";
   private final static UserSession USER_SESSION = UserSession.Builder.newBuilder()
-    .withSessionOptionManager(new SessionOptionManagerImpl(null))
+    .withSessionOptionManager(
+      new SessionOptionManagerImpl(getSabotContext().getOptionValidatorListing()),
+      getSabotContext().getOptionManager())
     .withCredentials(UserBitShared.UserCredentials.newBuilder().setUserName("foo").build())
       .build();
 
@@ -200,7 +202,8 @@ public class TestLocalExchange extends PlanTestBase {
         1.2, /*affinityFactor*/
         AbstractMaestroObserver.NOOP,
         true,
-        1.5d);
+        1.5d,
+        false);
   }
 
   public static void setupHelper(boolean isMuxOn, boolean isDeMuxOn) throws Exception {
@@ -427,6 +430,11 @@ public class TestLocalExchange extends PlanTestBase {
     PARALLELIZER.setExecutorSelectionService(new ExecutorSelectionService() {
       @Override
       public ExecutorSelectionHandle getExecutors(int desiredNumExecutors, ExecutorSelectionContext executorSelectionContext) {
+        return new ExecutorSelectionHandleImpl(sabotContext.getExecutors());
+      }
+
+      @Override
+      public ExecutorSelectionHandle getAllActiveExecutors(ExecutorSelectionContext executorSelectionContext) {
         return new ExecutorSelectionHandleImpl(sabotContext.getExecutors());
       }
 

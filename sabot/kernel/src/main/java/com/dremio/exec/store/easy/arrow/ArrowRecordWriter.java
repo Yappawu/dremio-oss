@@ -174,12 +174,18 @@ public class ArrowRecordWriter implements RecordWriter {
       currentFileOutputStream.close();
       currentFileOutputStream = null;
 
-      ArrowFileMetadata lastFileMetadata =
+      ArrowFileMetadata.Builder builder =
           ArrowFileMetadata.newBuilder()
               .setFooter(footer)
               .setRecordCount(recordCount)
               .setPath(relativePath)
-              .build();
+              .setArrowMetadataVersion(org.apache.arrow.vector.types.MetadataVersion.DEFAULT.toFlatbufID());
+
+      if(context.getNodeEndpointProvider() != null) {
+        builder.setScreenNodeEndpoint(context.getNodeEndpointProvider().get());
+      }
+
+      ArrowFileMetadata lastFileMetadata = builder.build();
 
       outputEntryListener.recordsWritten(recordCount, fileSize, currentFile.toString(), lastFileMetadata.toByteArray(), null, null);
     }

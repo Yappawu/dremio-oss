@@ -33,6 +33,7 @@ import com.dremio.common.exceptions.UserException;
 import com.dremio.common.utils.SqlUtils;
 import com.dremio.exec.catalog.Catalog;
 import com.dremio.exec.catalog.DremioTable;
+import com.dremio.exec.ops.ReflectionContext;
 import com.dremio.exec.planner.sql.CalciteArrowHelper;
 import com.dremio.exec.planner.sql.SchemaUtilities;
 import com.dremio.exec.planner.sql.SchemaUtilities.TableWithPath;
@@ -56,10 +57,14 @@ public class AccelCreateReflectionHandler extends SimpleDirectHandler {
 
   private final Catalog catalog;
   private final AccelerationManager accel;
+  private final ReflectionContext reflectionContext;
+  private final boolean complexTypeSupport;
 
-  public AccelCreateReflectionHandler(Catalog catalog, AccelerationManager accel) {
+  public AccelCreateReflectionHandler(Catalog catalog, AccelerationManager accel, ReflectionContext reflectionContext, boolean complexTypeSupport) {
     this.catalog = catalog;
     this.accel = accel;
+    this.reflectionContext = reflectionContext;
+    this.complexTypeSupport = complexTypeSupport;
   }
 
   @Override
@@ -78,13 +83,14 @@ public class AccelCreateReflectionHandler extends SimpleDirectHandler {
         addLayout.isRaw() ? LayoutDefinition.Type.RAW : LayoutDefinition.Type.AGGREGATE,
         table.qualifyColumns(addLayout.getDisplayList()),
         qualifyColumnsWithGranularity(table.getTable(), addLayout.getDimensionList()),
-        qualifyColumnsWithMeasures(table.getTable(), addLayout.getMeasureList()),
+        qualifyColumnsWithMeasures(table.getTable(), addLayout.getMeasureList(), complexTypeSupport),
         table.qualifyColumns(addLayout.getSortList()),
         table.qualifyColumns(addLayout.getDistributionList()),
         table.qualifyColumns(addLayout.getPartitionList()),
+        addLayout.getArrowCachingEnabled(),
         addLayout.getPartitionDistributionStrategy()
     );
-    accel.addLayout(table.getPath(), layout);
+    accel.addLayout(table.getPath(), layout, reflectionContext);
     return Collections.singletonList(SimpleCommandResult.successful("Layout added."));
   }
 
@@ -192,9 +198,9 @@ public class AccelCreateReflectionHandler extends SimpleDirectHandler {
       }).collect(Collectors.toList());
   }
 
-  private static List<NameAndMeasures> qualifyColumnsWithMeasures(DremioTable table, List<NameAndMeasures> measures){
+  private static List<NameAndMeasures> qualifyColumnsWithMeasures(DremioTable table, List<NameAndMeasures> measures, boolean complexTypeSupport){
     // we are using getSchema() instead of getRowType() as it doesn't always report the correct field types for View tables
-    final RelDataType type = CalciteArrowHelper.wrap(table.getSchema()).toCalciteRecordType(JavaTypeFactoryImpl.INSTANCE);
+    final RelDataType type = CalciteArrowHelper.wrap(table.getSchema()).toCalciteRecordType(JavaTypeFactoryImpl.INSTANCE, complexTypeSupport);
     return measures.stream().map(input -> {
         RelDataTypeField field = type.getField(input.getName(), false, false);
         if(field == null){

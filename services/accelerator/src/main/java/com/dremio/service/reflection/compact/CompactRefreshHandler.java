@@ -18,8 +18,6 @@ package com.dremio.service.reflection.compact;
 import static com.dremio.exec.planner.acceleration.IncrementalUpdateUtils.UPDATE_COLUMN;
 
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,14 +35,11 @@ import com.dremio.common.exceptions.UserException;
 import com.dremio.exec.ExecConstants;
 import com.dremio.exec.physical.PhysicalPlan;
 import com.dremio.exec.physical.base.PhysicalOperator;
-import com.dremio.exec.physical.base.WriterOptions;
 import com.dremio.exec.planner.logical.Rel;
 import com.dremio.exec.planner.logical.ScreenRel;
 import com.dremio.exec.planner.logical.WriterRel;
-import com.dremio.exec.planner.observer.AttemptObserver;
 import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.planner.physical.Prel;
-import com.dremio.exec.planner.sql.CalciteArrowHelper;
 import com.dremio.exec.planner.sql.SqlExceptionHelper;
 import com.dremio.exec.planner.sql.handlers.ConvertedRelNode;
 import com.dremio.exec.planner.sql.handlers.PrelTransformer;
@@ -53,30 +48,25 @@ import com.dremio.exec.planner.sql.handlers.SqlHandlerConfig;
 import com.dremio.exec.planner.sql.handlers.SqlHandlerUtil;
 import com.dremio.exec.planner.sql.handlers.direct.SqlNodeUtil;
 import com.dremio.exec.planner.sql.handlers.query.SqlToPlanHandler;
-import com.dremio.exec.planner.sql.parser.PartitionDistributionStrategy;
 import com.dremio.exec.planner.sql.parser.SqlCompactMaterialization;
-import com.dremio.exec.store.RecordWriter;
 import com.dremio.exec.work.foreman.ForemanSetupException;
 import com.dremio.options.OptionManager;
 import com.dremio.service.namespace.NamespaceKey;
+import com.dremio.service.reflection.ReflectionGoalChecker;
 import com.dremio.service.reflection.ReflectionService;
 import com.dremio.service.reflection.ReflectionUtils;
+import com.dremio.service.reflection.WriterOptionManager;
 import com.dremio.service.reflection.proto.Materialization;
 import com.dremio.service.reflection.proto.MaterializationId;
-import com.dremio.service.reflection.proto.ReflectionDetails;
 import com.dremio.service.reflection.proto.ReflectionEntry;
-import com.dremio.service.reflection.proto.ReflectionField;
 import com.dremio.service.reflection.proto.ReflectionGoal;
 import com.dremio.service.reflection.proto.ReflectionId;
 import com.dremio.service.reflection.proto.Refresh;
-import com.dremio.service.reflection.store.ReflectionGoalsStore;
 import com.dremio.service.users.SystemUser;
 import com.google.common.base.Optional;
-import com.google.common.base.Stopwatch;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 
 /**
@@ -85,7 +75,13 @@ import com.google.common.collect.Lists;
 public class CompactRefreshHandler implements SqlToPlanHandler {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(CompactRefreshHandler.class);
 
+  private final WriterOptionManager writerOptionManager;
+
   private String textPlan;
+
+  public CompactRefreshHandler() {
+    this.writerOptionManager = WriterOptionManager.Instance;
+  }
 
   private List<String> normalizeComponents(final List<String> components) {
     if (components.size() != 1 && components.size() != 2) {
@@ -115,12 +111,9 @@ public class CompactRefreshHandler implements SqlToPlanHandler {
           .build(logger);
       }
 
-      final AttemptObserver observer = config.getObserver();
       ReflectionService service = config.getContext().getAccelerationManager().unwrap(ReflectionService.class);
 
       // Let's validate the plan.
-      Stopwatch watch = Stopwatch.createStarted();
-
       final List<String> materializationPath = normalizeComponents(compact.getMaterializationPath());
       if (materializationPath == null) {
         throw SqlExceptionHelper.parseError("Unknown materialization", sql, compact.getParserPosition())
@@ -139,7 +132,7 @@ public class CompactRefreshHandler implements SqlToPlanHandler {
         throw SqlExceptionHelper.parseError("Unknown reflection id.", sql, compact.getParserPosition()).build(logger);
       }
       final ReflectionEntry entry = entryOpt.get();
-      if(!ReflectionGoalsStore.checkGoalVersion(goal, entry.getGoalVersion())) {
+      if(!ReflectionGoalChecker.checkGoal(goal, entry)) {
         throw UserException.validationError().message("Reflection has been updated since reflection was scheduled.").build(logger);
       }
 
@@ -160,24 +153,24 @@ public class CompactRefreshHandler implements SqlToPlanHandler {
       }
       final Materialization newMaterialization = newMaterializationOpt.get();
 
-      observer.planValidated(CalciteArrowHelper.wrap(RecordWriter.SCHEMA).toCalciteRecordType(config.getConverter().getCluster().getTypeFactory()), compact, watch.elapsed(TimeUnit.MILLISECONDS));
-
-      watch.reset();
-
       final List<String> tableSchemaPath = ReflectionUtils.getMaterializationPath(materialization);
 
       final PlanNormalizer planNormalizer = new PlanNormalizer(config);
       final RelNode initial = getPlan(config, tableSchemaPath, planNormalizer);
 
-      observer.planConvertedToRel(initial, watch.elapsed(TimeUnit.MILLISECONDS));
-
-      final Rel drel = PrelTransformer.convertToDrel(config, initial);
-      final Set<String> fields = ImmutableSet.copyOf(drel.getRowType().getFieldNames());
+      final Rel drel = PrelTransformer.convertToDrelMaintainingNames(config, initial);
+      final List<String> fields = drel.getRowType().getFieldNames();
       final long ringCount = config.getContext().getOptions().getOption(PlannerSettings.RING_COUNT);
-      final Rel writerDrel = new WriterRel(drel.getCluster(), drel.getCluster().traitSet().plus(Rel.LOGICAL),
-        drel, config.getContext().getCatalog().createNewTable(
+      final Rel writerDrel = new WriterRel(
+        drel.getCluster(),
+        drel.getCluster().traitSet().plus(Rel.LOGICAL),
+        drel,
+        config.getContext().getCatalog().createNewTable(
           new NamespaceKey(ReflectionUtils.getMaterializationPath(newMaterialization)),
-        null, getWriterOptions((int) ringCount, goal, fields), ImmutableMap.of()),
+          null,
+          writerOptionManager.buildWriterOptionForReflectionGoal((int) ringCount, goal, fields),
+          ImmutableMap.of()
+        ),
         initial.getRowType()
       );
 
@@ -204,44 +197,6 @@ public class CompactRefreshHandler implements SqlToPlanHandler {
   @Override
   public String getTextPlan() {
     return textPlan;
-  }
-
-  private WriterOptions getWriterOptions(Integer ringCount, ReflectionGoal goal, Set<String> availableFields) {
-    ReflectionDetails details = goal.getDetails();
-
-    PartitionDistributionStrategy dist;
-    switch(details.getPartitionDistributionStrategy()) {
-      case STRIPED:
-        dist = PartitionDistributionStrategy.STRIPED;
-        break;
-      case CONSOLIDATED:
-      default:
-        dist = PartitionDistributionStrategy.HASH;
-    }
-
-    return new WriterOptions(ringCount,
-      toStrings(details.getPartitionFieldList(), availableFields),
-      toStrings(details.getSortFieldList(), availableFields),
-      toStrings(details.getDistributionFieldList(), availableFields),
-      dist,
-      false,
-      Long.MAX_VALUE);
-  }
-
-  private static List<String> toStrings(List<ReflectionField> fields, Set<String> knownFields){
-    if(fields == null || fields.isEmpty()) {
-      return ImmutableList.of();
-    }
-
-    ImmutableList.Builder<String> fieldList = ImmutableList.builder();
-    for(ReflectionField f : fields) {
-      if(!knownFields.contains(f.getName())) {
-        throw UserException.validationError().message("Unable to find field %s.", f).build(logger);
-      }
-
-      fieldList.add(f.getName());
-    }
-    return fieldList.build();
   }
 
   private RelNode getPlan(SqlHandlerConfig sqlHandlerConfig, List<String> refreshTablePath, PlanNormalizer planNormalizer) {

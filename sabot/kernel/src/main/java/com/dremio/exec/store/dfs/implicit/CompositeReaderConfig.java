@@ -25,14 +25,16 @@ import java.util.Set;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.types.pojo.Field;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.dremio.common.AutoCloseables.RollbackCloseable;
 import com.dremio.common.expression.CompleteType;
 import com.dremio.common.expression.Describer;
 import com.dremio.common.expression.SchemaPath;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.store.RecordReader;
 import com.dremio.exec.store.SplitAndPartitionInfo;
-import com.dremio.exec.store.dfs.implicit.AdditionalColumnsRecordReader.Populator;
 import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.BigIntNameValuePair;
 import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.BitNameValuePair;
 import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.DateMilliNameValuePair;
@@ -43,18 +45,22 @@ import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.TimeMilliName
 import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.TimeStampMilliNameValuePair;
 import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.VarBinaryNameValuePair;
 import com.dremio.exec.store.dfs.implicit.ConstantColumnPopulators.VarCharNameValuePair;
+import com.dremio.sabot.exec.context.OperatorContext;
 import com.dremio.service.namespace.dataset.proto.PartitionProtobuf.PartitionValue;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
 public class CompositeReaderConfig {
+  private static final Logger logger = LoggerFactory.getLogger(CompositeReaderConfig.class);
 
+  private final OperatorContext context;
   private final ImmutableList<SchemaPath> innerColumns;
   private final ImmutableMap<String, FieldValuePair> partitionFieldMap;
 
-  private CompositeReaderConfig(List<SchemaPath> innerColumns, List<FieldValuePair> partitionFields) {
+  private CompositeReaderConfig(OperatorContext context, List<SchemaPath> innerColumns, List<FieldValuePair> partitionFields) {
     super();
+    this.context = context;
     this.innerColumns = ImmutableList.copyOf(innerColumns);
     this.partitionFieldMap = FluentIterable.from(partitionFields).uniqueIndex(input -> input.field.getName());
   }
@@ -67,18 +73,29 @@ public class CompositeReaderConfig {
     if(partitionFieldMap.isEmpty()){
       return innerReader;
     } else {
-      Populator[] populators = new Populator[partitionFieldMap.size()];
-      List<PartitionValue> values = split.getPartitionInfo().getValuesList();
-      int i = 0;
-      for(PartitionValue v : values) {
+      final List<NameValuePair<?>> nameValuePairs = getPartitionNVPairs(allocator, split);
+      return new AdditionalColumnsRecordReader(context, innerReader, nameValuePairs, allocator, split);
+    }
+  }
+
+  public List<NameValuePair<?>> getPartitionNVPairs(final BufferAllocator allocator, final SplitAndPartitionInfo split) {
+    List<NameValuePair<?>> nameValuePairs = new ArrayList<>();
+    List<PartitionValue> values = split.getPartitionInfo().getValuesList();
+    try (RollbackCloseable rollbackCloseable = new RollbackCloseable()) {
+      for (PartitionValue v : values) {
         FieldValuePair p = partitionFieldMap.get(v.getColumn());
-        if(p != null) {
-          populators[i] = p.toPopulator(allocator, v);
-          i++;
+        if (p!=null) {
+          NameValuePair<?> nvp = p.toNameValuePair(allocator, v);
+          rollbackCloseable.add(nvp);
+          nameValuePairs.add(nvp);
         }
       }
-      return new AdditionalColumnsRecordReader(innerReader, populators);
+      rollbackCloseable.commit();
+    } catch (Exception e) {
+      logger.error("Error while fetching name value pairs from partition", e);
+      throw new RuntimeException(e);
     }
+    return nameValuePairs;
   }
 
   private static class FieldValuePair {
@@ -89,15 +106,15 @@ public class CompositeReaderConfig {
       this.field = field;
     }
 
-    public Populator toPopulator(BufferAllocator allocator, PartitionValue value){
-      return getPopulator(allocator, field, value);
+    public NameValuePair<?> toNameValuePair(BufferAllocator allocator, PartitionValue value){
+      return getNameValuePair(allocator, field, value);
     }
   }
 
-  public static CompositeReaderConfig getCompound(BatchSchema schema, List<SchemaPath> selectedColumns, List<String> partColumnsList){
+  public static CompositeReaderConfig getCompound(OperatorContext context, BatchSchema schema, List<SchemaPath> selectedColumns, List<String> partColumnsList){
 
     if(partColumnsList == null || partColumnsList.isEmpty()){
-      return new CompositeReaderConfig(selectedColumns, Collections.<FieldValuePair>emptyList());
+      return new CompositeReaderConfig(context, selectedColumns, Collections.<FieldValuePair>emptyList());
     }
 
     Set<String> partitionColumns = new HashSet<>();
@@ -132,35 +149,35 @@ public class CompositeReaderConfig {
       }
     }
 
-    return new CompositeReaderConfig(remainingColumns, pairs);
+    return new CompositeReaderConfig(context, remainingColumns, pairs);
   }
 
 
-  public static Populator getPopulator(BufferAllocator allocator, Field field, PartitionValue partitionValue){
+  public static NameValuePair<?> getNameValuePair(BufferAllocator allocator, Field field, PartitionValue partitionValue){
     final CompleteType type = CompleteType.fromField(field);
     switch(type.toMinorType()){
     case BIGINT:
-      return new BigIntNameValuePair(field.getName(), getLong(partitionValue)).createPopulator();
+      return new BigIntNameValuePair(field.getName(), getLong(partitionValue));
     case BIT:
-      return new BitNameValuePair(field.getName(), getBit(partitionValue)).createPopulator();
+      return new BitNameValuePair(field.getName(), getBit(partitionValue));
     case DATE:
-      return new DateMilliNameValuePair(field.getName(), getLong(partitionValue)).createPopulator();
+      return new DateMilliNameValuePair(field.getName(), getLong(partitionValue));
     case FLOAT4:
-      return new Float4NameValuePair(field.getName(), getFloat(partitionValue)).createPopulator();
+      return new Float4NameValuePair(field.getName(), getFloat(partitionValue));
     case FLOAT8:
-      return new Float8NameValuePair(field.getName(), getDouble(partitionValue)).createPopulator();
+      return new Float8NameValuePair(field.getName(), getDouble(partitionValue));
     case INT:
-      return new IntNameValuePair(field.getName(), getInt(partitionValue)).createPopulator();
+      return new IntNameValuePair(field.getName(), getInt(partitionValue));
     case TIME:
-      return new TimeMilliNameValuePair(field.getName(), getInt(partitionValue)).createPopulator();
+      return new TimeMilliNameValuePair(field.getName(), getInt(partitionValue));
     case TIMESTAMP:
-      return new TimeStampMilliNameValuePair(field.getName(), getLong(partitionValue)).createPopulator();
+      return new TimeStampMilliNameValuePair(field.getName(), getLong(partitionValue));
     case DECIMAL:
-      return new TwosComplementValuePair(allocator, field, getByteArray(partitionValue)).createPopulator();
+      return new TwosComplementValuePair(allocator, field, getByteArray(partitionValue));
     case VARBINARY:
-      return new VarBinaryNameValuePair(field.getName(), getByteArray(partitionValue)).createPopulator();
+      return new VarBinaryNameValuePair(field.getName(), getByteArray(partitionValue));
     case VARCHAR:
-      return new VarCharNameValuePair(field.getName(), getString(partitionValue)).createPopulator();
+      return new VarCharNameValuePair(field.getName(), getString(partitionValue));
     default:
       throw new UnsupportedOperationException("Unable to return partition field: "  + Describer.describe(field));
 

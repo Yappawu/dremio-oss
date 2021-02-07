@@ -16,7 +16,10 @@
 package com.dremio.exec.store;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
+
+import org.apache.calcite.schema.Function;
 
 import com.dremio.connector.metadata.SourceMetadata;
 import com.dremio.datastore.Serializer;
@@ -70,6 +73,16 @@ public interface StoragePlugin extends Service, SourceMetadata {
   SourceCapabilities getSourceCapabilities();
 
   /**
+   * Retrieves table function implementations based on give table schema path and schema config.
+   * @param tableSchemaPath the table schema path.
+   * @param schemaConfig the schema config.
+   * @return a list of table functions implemented for this storage plugin. Returns an empty list by default.
+   */
+  default List<Function> getFunctions(List<String> tableSchemaPath, SchemaConfig schemaConfig) {
+    return Collections.emptyList();
+  }
+
+  /**
    * Create a new DatasetConfig based on a merger of a new schema and the DatasetConfig of this source.
    *
    * @param oldConfig The current DatasetConfiguration.
@@ -84,13 +97,17 @@ public interface StoragePlugin extends Service, SourceMetadata {
     if (DatasetHelper.getSchemaBytes(oldConfig) == null) {
       merge = newSchema;
     } else {
-      merge = CalciteArrowHelper.fromDataset(oldConfig).merge(newSchema);
+      merge = mergeSchemas(oldConfig, newSchema);
     }
 
     DatasetConfig newConfig = DATASET_CONFIG_SERIALIZER.deserialize(DATASET_CONFIG_SERIALIZER.serialize(oldConfig));
     newConfig.setRecordSchema(ByteString.copyFrom(merge.serialize()));
 
     return newConfig;
+  }
+
+  default BatchSchema mergeSchemas(DatasetConfig oldConfig, BatchSchema newSchema) {
+    return CalciteArrowHelper.fromDataset(oldConfig).merge(newSchema);
   }
 
   @Deprecated // Remove this method as the namespace should keep track of views.

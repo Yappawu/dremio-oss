@@ -18,6 +18,7 @@ package com.dremio.services.fabric;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.junit.Test;
 
 import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
@@ -29,7 +30,7 @@ import com.dremio.services.fabric.simple.ReceivedResponseMessage;
 import com.dremio.services.fabric.simple.SendEndpointCreator;
 import com.dremio.services.fabric.simple.SentResponseMessage;
 
-import io.netty.buffer.ArrowBuf;
+import io.netty.buffer.NettyArrowBuf;
 
 /**
  * Protocol builder test.
@@ -110,7 +111,7 @@ public class TestProtocolBuilder extends BaseTestFabric {
               }
               assertEqualsRpc(r1B, dBody);
               random2.retain();
-              return new SentResponseMessage<>(expectedQ, random2.asNettyBuffer());
+              return new SentResponseMessage<>(expectedQ, NettyArrowBuf.unwrapBuffer(random2));
             }
           });
 

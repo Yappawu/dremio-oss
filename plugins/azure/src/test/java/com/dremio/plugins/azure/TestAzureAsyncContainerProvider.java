@@ -19,8 +19,11 @@ package com.dremio.plugins.azure;
 import static junit.framework.TestCase.assertEquals;
 import static junit.framework.TestCase.assertNotNull;
 import static junit.framework.TestCase.assertTrue;
+import static junit.framework.TestCase.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -44,6 +47,9 @@ import org.asynchttpclient.Request;
 import org.asynchttpclient.Response;
 import org.junit.Test;
 
+import com.dremio.common.util.Retryer;
+import com.dremio.plugins.util.ContainerAccessDeniedException;
+import com.dremio.plugins.util.ContainerNotFoundException;
 import com.google.common.io.ByteStreams;
 
 /**
@@ -170,6 +176,76 @@ public class TestAzureAsyncContainerProvider {
 
     List<String> expectedContainers = Arrays.asList("page1container1", "page1container2", "page1container3");
     assertEquals(expectedContainers, receivedContainers);
+  }
+
+  @Test
+  public void testDoesContainerExists() throws ExecutionException, InterruptedException {
+    AzureStorageFileSystem parentClass = mock(AzureStorageFileSystem.class);
+    AzureAuthTokenProvider authTokenProvider = getMockAuthTokenProvider();
+    AsyncHttpClient client = mock(AsyncHttpClient.class);
+    Response response = mock(Response.class);
+    when(response.getHeader(any(String.class))).thenReturn("");
+    when(response.getStatusCode()).thenReturn(200);
+    ListenableFuture<Response> future = mock(ListenableFuture.class);
+    when(future.get()).thenReturn(response);
+    when(client.executeRequest(any(Request.class))).thenReturn(future);
+
+    AzureAsyncContainerProvider containerProvider = new AzureAsyncContainerProvider(
+      client, "azurestoragev2hier", authTokenProvider, parentClass, true);
+    containerProvider.assertContainerExists("container");
+  }
+
+  @Test
+  public void testDoesContainerExistsNotFound() throws ExecutionException, InterruptedException {
+    AzureStorageFileSystem parentClass = mock(AzureStorageFileSystem.class);
+    AzureAuthTokenProvider authTokenProvider = getMockAuthTokenProvider();
+    AsyncHttpClient client = mock(AsyncHttpClient.class);
+    Response response = mock(Response.class);
+    when(response.getHeader(any(String.class))).thenReturn("");
+    when(response.getStatusCode()).thenReturn(404);
+    when(response.getStatusText()).thenReturn("The specified filesystem does not exist.");
+    ListenableFuture<Response> future = mock(ListenableFuture.class);
+    when(future.get()).thenReturn(response);
+    when(client.executeRequest(any(Request.class))).thenReturn(future);
+
+    AzureAsyncContainerProvider containerProvider = new AzureAsyncContainerProvider(
+            client, "azurestoragev2hier", authTokenProvider, parentClass, true);
+    try {
+      containerProvider.assertContainerExists("container");
+      fail("Expecting exception");
+    } catch (Retryer.OperationFailedAfterRetriesException e) {
+      assertEquals(ContainerNotFoundException.class, e.getCause().getClass());
+      assertEquals("Unable to find container container - [404 The specified filesystem does not exist.]", e.getCause().getMessage());
+    }
+
+    // Ensure no retries attempted
+    verify(client, times(1)).executeRequest(any(Request.class));
+  }
+
+  @Test
+  public void testDoesContainerExistsAccessDenied() throws ExecutionException, InterruptedException {
+    AzureStorageFileSystem parentClass = mock(AzureStorageFileSystem.class);
+    AzureAuthTokenProvider authTokenProvider = getMockAuthTokenProvider();
+    AsyncHttpClient client = mock(AsyncHttpClient.class);
+    Response response = mock(Response.class);
+    when(response.getHeader(any(String.class))).thenReturn("");
+    when(response.getStatusCode()).thenReturn(403);
+    when(response.getStatusText()).thenReturn("Forbidden, InsufficientAccountPermissions, \"The account being accessed does not have sufficient permissions to execute this operation.\"");
+    ListenableFuture<Response> future = mock(ListenableFuture.class);
+    when(future.get()).thenReturn(response);
+    when(client.executeRequest(any(Request.class))).thenReturn(future);
+
+    AzureAsyncContainerProvider containerProvider = new AzureAsyncContainerProvider(
+            client, "azurestoragev2hier", authTokenProvider, parentClass, true);
+    try {
+      containerProvider.assertContainerExists("container");
+      fail("Expecting exception");
+    } catch (Retryer.OperationFailedAfterRetriesException e) {
+      assertTrue(e.getCause() instanceof ContainerAccessDeniedException);
+      assertEquals("Access to container container denied - [403 Forbidden, InsufficientAccountPermissions, \"The account being accessed does not have sufficient permissions to execute this operation.\"]", e.getCause().getMessage());
+    }
+    // Ensure no retries attempted
+    verify(client, times(1)).executeRequest(any(Request.class));
   }
 
   private byte[] readStaticResponse(String fileName) throws IOException {

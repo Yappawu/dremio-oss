@@ -62,7 +62,7 @@
     .ReactVirtualized__Table__headerRow {
       .formLabel();
       text-transform: initial;
-      height: 40px;
+      height: 30px;
       vertical-align: bottom;
       border-bottom: 1px solid rgba(0,0,0,.1);
     }
@@ -170,9 +170,12 @@
     .main-settings-holder{
       position: relative;
       display: inline-block;
-      margin: 9px 0 8px;
+      margin: 7px 0 8px;
+      .button-white:last-child {
+        margin-right: 0 !important;
+      }
       .button-white:hover{
-        background: #C7DEE6 !important;
+        background: #F9F9F9 !important;
       }
       .settings-button{
         padding: 0;
@@ -272,14 +275,16 @@
       margin: 0 10px;
       .title{
         font-size: 13px;
-        font-weight: bold;
+        font-weight: 500;
         margin: 0 0 7px;
       }
     }
   }
   .empty-table {
     .empty-message {
-      padding-top: 20%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
       position: absolute;
       height: 100%;
       width: 100%;

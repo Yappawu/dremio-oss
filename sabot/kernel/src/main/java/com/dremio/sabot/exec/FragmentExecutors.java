@@ -21,6 +21,8 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -35,6 +37,7 @@ import com.dremio.exec.exception.FragmentSetupException;
 import com.dremio.exec.planner.fragment.CachedFragmentReader;
 import com.dremio.exec.planner.fragment.PlanFragmentFull;
 import com.dremio.exec.planner.fragment.PlanFragmentsIndex;
+import com.dremio.exec.proto.CoordExecRPC;
 import com.dremio.exec.proto.CoordExecRPC.InitializeFragments;
 import com.dremio.exec.proto.CoordExecRPC.PlanFragmentMajor;
 import com.dremio.exec.proto.CoordExecRPC.PlanFragmentSet;
@@ -43,6 +46,7 @@ import com.dremio.exec.proto.CoordExecRPC.SchedulingInfo;
 import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
 import com.dremio.exec.proto.ExecProtos.FragmentHandle;
 import com.dremio.exec.proto.ExecRPC.FragmentStreamComplete;
+import com.dremio.exec.proto.UserBitShared;
 import com.dremio.exec.proto.UserBitShared.QueryId;
 import com.dremio.exec.rpc.Acks;
 import com.dremio.exec.rpc.Response;
@@ -63,6 +67,7 @@ import com.google.common.base.Predicates;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.Iterators;
+import com.google.common.collect.Sets;
 import com.google.protobuf.Empty;
 
 import io.grpc.stub.StreamObserver;
@@ -98,7 +103,16 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
       new CacheLoader<FragmentHandle, FragmentHandler>() {
         @Override
         public FragmentHandler load(FragmentHandle key) throws Exception {
-          return new FragmentHandler(key, evictionDelayMillis);
+          // Underlying loading cache's refresh() calls reload() on this
+          // cacheLoader, which indirectly calls this load() method.
+          // So new FragmentHandler should not be created, instead
+          // existing handler should be used. This will avoid using
+          // extra heap memory.
+          FragmentHandler exitingFragmentHandler = handlers.getIfPresent(key);
+          if(exitingFragmentHandler == null) {
+            return new FragmentHandler(key, evictionDelayMillis);
+          }
+          return exitingFragmentHandler;
         }
       },
       null, evictionDelayMillis);
@@ -154,6 +168,7 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
    * @param clerk
    */
   public void activateFragments(QueryId queryId, QueriesClerk clerk) {
+    logger.debug("received activation for query {}", QueryIdHelper.getQueryId(queryId));
     for (FragmentTicket fragmentTicket : clerk.getFragmentTickets(queryId)) {
       activateFragment(fragmentTicket.getHandle());
     }
@@ -169,6 +184,7 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
    * @param clerk
    */
   public void cancelFragments(QueryId queryId, QueriesClerk clerk) {
+    logger.debug("received cancel for query {}", QueryIdHelper.getQueryId(queryId));
     maestroProxy.setQueryCancelled(queryId);
     for (FragmentTicket fragmentTicket : clerk.getFragmentTickets(queryId)) {
       cancelFragment(fragmentTicket.getHandle());
@@ -181,19 +197,22 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
    * @param queryId
    * @param clerk
    */
-  public void failFragments(QueryId queryId, QueriesClerk clerk, Throwable throwable) {
+  public void failFragments(QueryId queryId, QueriesClerk clerk, Throwable throwable, String failContext) {
     for (FragmentTicket fragmentTicket : clerk.getFragmentTickets(queryId)) {
-      failFragment(fragmentTicket.getHandle(), throwable);
+      failFragment(fragmentTicket.getHandle(), throwable, failContext);
     }
   }
 
   @VisibleForTesting
   void cancelFragment(FragmentHandle handle) { handlers.getUnchecked(handle).cancel(); }
 
-  void failFragment(FragmentHandle handle, Throwable throwable) {
+  void failFragment(FragmentHandle handle, Throwable throwable, String failContext) {
     UserException.Builder builder = UserException
       .resourceError(throwable)
       .message(UserException.MEMORY_ERROR_MSG);
+    if (failContext != null && !failContext.isEmpty()) {
+      builder = builder.addContext(failContext);
+    }
     handlers.getUnchecked(handle).fail(builder.buildSilently());
   }
 
@@ -247,6 +266,50 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
     }
 
     AutoCloseables.close(handlers);
+  }
+
+  public void startFragmentOnLocal(PlanFragmentFull planFragmentFull, FragmentExecutorBuilder fragmentExecutorBuilder) {
+    CoordExecRPC.InitializeFragments.Builder fb = CoordExecRPC.InitializeFragments.newBuilder();
+    CoordExecRPC.PlanFragmentSet.Builder setB = fb.getFragmentSetBuilder();
+    setB.addMajor(planFragmentFull.getMajor());
+    setB.addMinor(planFragmentFull.getMinor());
+    // No minor specific attributes since there is one minor
+    // No endpoint index since this is supposed to run on localhost
+
+    // Set the workload class to be background
+    CoordExecRPC.SchedulingInfo.Builder scheduleB = fb.getSchedulingInfoBuilder();
+    // Dont need to set queueId for WorkloadClass BACKGROUND
+    scheduleB.setWorkloadClass(UserBitShared.WorkloadClass.BACKGROUND);
+
+    CoordExecRPC.InitializeFragments initializeFragments = fb.build();
+
+    UserBitShared.QueryId queryId = planFragmentFull.getHandle().getQueryId();
+    maestroProxy.doNotTrack(queryId);
+
+    startFragments(initializeFragments, fragmentExecutorBuilder, new StreamObserver<Empty>() {
+      @Override
+      public void onNext(Empty empty) {}
+
+      @Override
+      public void onError(Throwable throwable) {
+        logger.error("Unable to execute query due to {}", throwable);
+      }
+
+      @Override
+      public void onCompleted() {
+        logger.info("Completed executing query");
+      }
+    }, fragmentExecutorBuilder.getNodeEndpoint());
+
+    activateFragments(queryId, fragmentExecutorBuilder.getClerk());
+  }
+
+  public QueryId getQueryIdForLocalQuery() {
+    UUID queryUUID = UUID.randomUUID();
+    return UserBitShared.QueryId.newBuilder()
+      .setPart1(queryUUID.getMostSignificantBits())
+      .setPart2(queryUUID.getLeastSignificantBits())
+      .build();
   }
 
   /**
@@ -304,6 +367,7 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
        */
       List<FragmentExecutor> fragmentExecutors = new ArrayList<>();
       UserRpcException userRpcException = null;
+      Set<FragmentHandle> fragmentHandlesForQuery = Sets.newHashSet();
       try {
         if (!maestroProxy.tryStartQuery(queryId, queryTicket)) {
           boolean isDuplicateStart = maestroProxy.isQueryStarted(queryId);
@@ -314,9 +378,9 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
             throw new IllegalStateException("query already cancelled");
           }
         }
-
         for (PlanFragmentFull fragment : fullFragments) {
           FragmentExecutor fe = buildFragment(queryTicket, fragment, schedulingInfo);
+          fragmentHandlesForQuery.add(fe.getHandle());
           fragmentExecutors.add(fe);
         }
       } catch (UserRpcException e) {
@@ -324,6 +388,9 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
       } catch (Exception e) {
         userRpcException = new UserRpcException(NodeEndpoint.getDefaultInstance(), "Remote message leaked.", e);
       } finally {
+        if (fragmentHandlesForQuery.size() > 0) {
+          maestroProxy.initFragmentHandlesForQuery(queryId, fragmentHandlesForQuery);
+        }
         for (FragmentExecutor fe : fragmentExecutors) {
           startFragment(fe);
         }
@@ -388,6 +455,8 @@ public class FragmentExecutors implements AutoCloseable, Iterable<FragmentExecut
           public void close() throws Exception {
             numRunningFragments.decrementAndGet();
             handler.invalidate();
+
+            maestroProxy.markQueryAsDone(handler.getHandle().getQueryId());
 
             if (callback != null) {
               callback.indicateIfSafeToExit();

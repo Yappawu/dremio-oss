@@ -19,8 +19,6 @@ import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-import javax.ws.rs.NotAuthorizedException;
-
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.annotations.OnWebSocketClose;
 import org.eclipse.jetty.websocket.api.annotations.OnWebSocketConnect;
@@ -41,7 +39,6 @@ import com.dremio.dac.server.socket.SocketMessage.ListenDetails;
 import com.dremio.dac.server.socket.SocketMessage.ListenProgress;
 import com.dremio.dac.server.socket.SocketMessage.ListenRecords;
 import com.dremio.dac.server.socket.SocketMessage.Payload;
-import com.dremio.dac.server.tokens.TokenManager;
 import com.dremio.dac.server.tokens.TokenUtils;
 import com.dremio.dac.util.JSONUtil;
 import com.dremio.service.job.JobSummary;
@@ -49,6 +46,7 @@ import com.dremio.service.job.proto.JobId;
 import com.dremio.service.jobs.ExternalStatusListener;
 import com.dremio.service.jobs.JobsProtoUtil;
 import com.dremio.service.jobs.JobsService;
+import com.dremio.service.tokens.TokenManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
@@ -95,12 +93,7 @@ public class SocketServlet extends WebSocketServlet {
       }
 
       final String authHeader = req.getSubProtocols().get(0);
-      final String token;
-      try {
-        token = TokenUtils.getTokenFromAuthHeader(authHeader);
-      } catch (NotAuthorizedException ignored) {
-        return sendForbiddenAsResponse(resp);
-      }
+      final String token = TokenUtils.getToken(authHeader);
 
       final UserName userName;
       try {
@@ -160,7 +153,16 @@ public class SocketServlet extends WebSocketServlet {
         } else if (msg instanceof ListenRecords) {
           JobId id = ((ListenRecords) msg).getId();
           jobsService.registerListener(id, new RecordsListener(id, this));
+        } else if (msg instanceof SocketMessage.ListenReflectionJobDetails) {
+          JobId id = ((SocketMessage.ListenReflectionJobDetails) msg).getId();
+          String reflectionId = ((SocketMessage.ListenReflectionJobDetails) msg).getReflectionId();
+          jobsService.registerReflectionJobListener(id, user.getName(), reflectionId, new DetailsListener(id, this));
+        } else if (msg instanceof SocketMessage.ListenReflectionJobProgress) {
+          JobId id = ((SocketMessage.ListenReflectionJobProgress) msg).getId();
+          String reflectionId = ((SocketMessage.ListenReflectionJobProgress) msg).getReflectionId();
+          jobsService.registerReflectionJobListener(id, user.getName(), reflectionId, new ProgressListener(id, this));
         }
+
       } catch (Exception e) {
         logger.warn("Failure handling socket message of {}.", message, e);
         send(new SocketMessage.ErrorPayload(e.getMessage()));

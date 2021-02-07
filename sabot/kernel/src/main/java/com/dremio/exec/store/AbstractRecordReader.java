@@ -20,6 +20,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+import javax.annotation.Nullable;
+
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.ValueVector;
 
@@ -28,6 +30,7 @@ import com.dremio.exec.ExecConstants;
 import com.dremio.exec.physical.base.GroupScan;
 import com.dremio.exec.util.ColumnUtils;
 import com.dremio.sabot.exec.context.OperatorContext;
+import com.dremio.sabot.op.scan.ScanOperator;
 import com.google.common.base.Preconditions;
 import com.google.common.primitives.Ints;
 
@@ -84,18 +87,18 @@ public abstract class AbstractRecordReader implements RecordReader {
    *                  choose different policy of handling skipAll query. By default, it will use * column.
    *                  2) NULL : is NOT allowed. It requires the planner's rule, or GroupScan or ScanBatchCreator to handle NULL.
    */
-  private final void setColumns(Collection<SchemaPath> projected) {
+  private void setColumns(Collection<SchemaPath> projected) {
     Preconditions.checkNotNull(projected, COL_NULL_ERROR);
     isSkipQuery = projected.isEmpty();
     Collection<SchemaPath> columnsToRead = projected;
 
     // If no column is required (SkipQuery), by default it will use DEFAULT_COLS_TO_READ .
-    // Handling SkipQuery is storage-plugin specif : JSON, text reader, parquet will override, in order to
+    // Handling SkipQuery is storage-plugin specific : JSON, text reader, parquet will override, in order to
     // improve query performance.
     if (projected.isEmpty()) {
-      if(supportsSkipAllQuery()){
+      if (supportsSkipAllQuery()) {
         columnsToRead = Collections.emptyList();
-      }else{
+      } else {
         columnsToRead = GroupScan.ALL_COLUMNS;
       }
     }
@@ -135,5 +138,39 @@ public abstract class AbstractRecordReader implements RecordReader {
     for (final ValueVector v : vectorMap.values()) {
       v.allocateNew();
     }
+  }
+
+  /**
+   * Returns a message to be shown to the user if an exception is thrown that can't be processed
+   * properly because its cause is not recognizable, typically because we can't have a dependency
+   * on its type.
+   * The message is a best-effort one.
+   * @param t Throwable presented as the cause of the IOException.
+   * @return a String to be shown to the user, or null if there is no reasonable response.
+   */
+  @Nullable
+  public String bestEffortMessageForUnknownException(Throwable t) {
+    if (t == null) {
+      return null;
+    }
+    String tString = t.toString();
+    // For exceptions involving AmazonS3Exception (DX-21818):
+    if (tString.contains("AmazonS3Exception")) {
+      if (tString.contains("Requests specifying Server Side Encryption with "
+        + "AWS KMS managed keys must be made over a secure connection.")) {
+        return "The request failed because it was made over an insecure connection. "
+          + "Check the 'Encrypt Connection' box when creating the source.";
+      } else {
+        return "The request failed with the following cause: " + tString;
+      }
+    } else {
+      return null;
+    }
+  }
+
+  @Override
+  public void addRuntimeFilter(RuntimeFilter runtimeFilter) {
+    logger.debug("Dropping runtime filter from {} because the reader does not support runtime filtering", runtimeFilter.getSenderInfo());
+    context.getStats().addLongStat(ScanOperator.Metric.RUNTIME_COL_FILTER_DROP_COUNT, runtimeFilter.getNonPartitionColumnFilters().size());
   }
 }

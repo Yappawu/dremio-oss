@@ -17,20 +17,19 @@ package com.dremio.exec.store.parquet;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.List;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.util.AutoCloseables;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.io.SeekableInputStream;
 
 import com.dremio.io.ArrowBufFSInputStream;
 import com.dremio.io.file.FileSystem;
 import com.dremio.io.file.Path;
 import com.dremio.sabot.exec.context.OperatorContext;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * An InputStreamProvider that uses a single stream.
@@ -44,19 +43,30 @@ public class SingleStreamProvider implements InputStreamProvider {
   private final long maxFooterLen;
   private final boolean readFullFile;
   private BulkInputStream stream;
-  private ParquetMetadata footer;
+  private OperatorContext context;
 
-  public SingleStreamProvider(FileSystem fs, Path path, long fileLength, long maxFooterLen, boolean readFullFile, OperatorContext context) {
+  private MutableParquetMetadata footer;
+  private boolean readColumnOffsetIndices;
+
+  public SingleStreamProvider(FileSystem fs, Path path, long fileLength, long maxFooterLen, boolean readFullFile, MutableParquetMetadata footer, OperatorContext context, boolean readColumnOffsetIndices) {
     this.fs = fs;
     this.path = path;
     this.fileLength = fileLength;
     this.maxFooterLen = maxFooterLen;
     this.readFullFile = readFullFile;
+    this.footer = footer;
+    this.context = context;
     if (context != null) {
       this.allocator = context.getAllocator();
     } else {
       this.allocator = null;
     }
+    this.readColumnOffsetIndices = readColumnOffsetIndices;
+  }
+
+  @Override
+  public Path getStreamPath() {
+    return path;
   }
 
   @Override
@@ -91,10 +101,55 @@ public class SingleStreamProvider implements InputStreamProvider {
   }
 
   @Override
-  public ParquetMetadata getFooter() throws IOException {
+  public void enableColumnIndices(List<ColumnChunkMetaData> selectedColumns) throws IOException {
+    this.readColumnOffsetIndices = true;
+  }
+
+  @Override
+  public OffsetIndexProvider getOffsetIndexProvider(List<ColumnChunkMetaData> columns) {
+    if (readColumnOffsetIndices) {
+      if ((columns.size() == 0) || (columns.get(0).getOffsetIndexReference() == null)) {
+        return null;
+      }
+      try (BulkInputStream inputStream = BulkInputStream.wrap(Streams.wrap(fs.open(path)))) {
+        OffsetIndexProvider offsetIndexProvider;
+        offsetIndexProvider = new OffsetIndexProvider(inputStream, allocator, columns);
+        if ((context != null) && (context.getStats() != null)) {
+          context.getStats().addLongStat(com.dremio.sabot.op.scan.ScanOperator.Metric.OFFSET_INDEX_READ, 1);
+        }
+        return offsetIndexProvider;
+      } catch (IOException ex) {
+        //Ignore error and return null;
+      }
+    }
+    return null;
+  }
+
+  @Override
+  public ColumnIndexProvider getColumnIndexProvider(List<ColumnChunkMetaData> columns) {
+    if (readColumnOffsetIndices) {
+      if ((columns.size() == 0) || (columns.get(0).getColumnIndexReference() == null)) {
+        return null;
+      }
+      try (BulkInputStream inputStream = BulkInputStream.wrap(Streams.wrap(fs.open(path)))) {
+        ColumnIndexProvider columnIndexProvider;
+        columnIndexProvider = new ColumnIndexProvider(inputStream, allocator, columns);
+        if ((context != null) && (context.getStats() != null)) {
+          context.getStats().addLongStat(com.dremio.sabot.op.scan.ScanOperator.Metric.COLUMN_INDEX_READ, 1);
+        }
+        return columnIndexProvider;
+      } catch (IOException ex) {
+        //Ignore error and return null;
+      }
+    }
+    return null;
+  }
+
+  @Override
+  public MutableParquetMetadata getFooter() throws IOException {
     if(footer == null) {
       SingletonParquetFooterCache footerCache = new SingletonParquetFooterCache();
-      footer = footerCache.getFooter(getStream(null), path.toString(), fileLength, fs, maxFooterLen);
+      footer = new MutableParquetMetadata(footerCache.getFooter(getStream(null), path.toString(), fileLength, fs, maxFooterLen));
     }
     return footer;
   }

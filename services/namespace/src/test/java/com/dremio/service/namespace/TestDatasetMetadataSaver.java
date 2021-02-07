@@ -21,9 +21,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
-import java.util.ConcurrentModificationException;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -36,12 +34,12 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
+import com.dremio.common.exceptions.UserException;
 import com.dremio.connector.metadata.DatasetHandle;
-import com.dremio.connector.metadata.DatasetSplitListing;
 import com.dremio.connector.metadata.EntityPath;
-import com.dremio.connector.metadata.PartitionChunk;
+import com.dremio.connector.metadata.PartitionChunkListing;
 import com.dremio.connector.sample.SampleSourceMetadata;
-import com.dremio.datastore.LocalKVStoreProvider;
+import com.dremio.datastore.adapter.LegacyKVStoreProviderAdapter;
 import com.dremio.datastore.api.LegacyIndexedStore;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
@@ -68,7 +66,7 @@ public class TestDatasetMetadataSaver {
   @Before
   public void setup() throws Exception {
     kvStoreProvider =
-      new LocalKVStoreProvider(DremioTest.CLASSPATH_SCAN_RESULT, null, true, false).asLegacy();
+        LegacyKVStoreProviderAdapter.inMemory(DremioTest.CLASSPATH_SCAN_RESULT);
     kvStoreProvider.start();
     namespaceService = new NamespaceServiceImpl(kvStoreProvider);
   }
@@ -131,19 +129,8 @@ public class TestDatasetMetadataSaver {
   private void saveDataset(SampleSourceMetadata connector, DatasetHandle ds, DatasetConfig dsConfig, NamespaceKey dsPath,
                            boolean quitBeforeSaving, boolean opportunisticSave, long maxSingleSplitPartitionchunks) throws NamespaceException, IOException {
     try (DatasetMetadataSaver metadataSaver = namespaceService.newDatasetMetadataSaver(dsPath, dsConfig.getId(), currentCompression, maxSingleSplitPartitionchunks)) {
-      // loop through all partition chunks of the dataset
-      Iterator<? extends PartitionChunk> it = connector.listPartitionChunks(ds).iterator();
-      while (it.hasNext()) {
-        PartitionChunk chunk = it.next();
-        // loop through all dataset splits of this partition chunk
-        DatasetSplitListing splits = chunk.getSplits();
-        Iterator<? extends com.dremio.connector.metadata.DatasetSplit> splitsIt = splits.iterator();
-        while (splitsIt.hasNext()) {
-          com.dremio.connector.metadata.DatasetSplit split = splitsIt.next();
-          metadataSaver.saveDatasetSplit(split);
-        }
-        metadataSaver.savePartitionChunk(chunk);
-      }
+      final PartitionChunkListing chunks = connector.listPartitionChunks(ds);
+      metadataSaver.savePartitionChunks(chunks);
       if (quitBeforeSaving) {
         return;
       }
@@ -341,7 +328,7 @@ public class TestDatasetMetadataSaver {
     saveDataset(s, ds, dsConfig, dsPath, false, false, Long.MAX_VALUE);
 
     dsConfig.setId(new EntityId().setId("Bogus"));
-    expectedException.expect(new ExceptionMatcher<>("There already exists an entity", ConcurrentModificationException.class));
+    expectedException.expect(new ExceptionMatcher<>("There already exists an entity", UserException.class));
     saveDataset(s, ds, dsConfig, dsPath, false, true, Long.MAX_VALUE);
   }
 

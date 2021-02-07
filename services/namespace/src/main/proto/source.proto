@@ -46,6 +46,8 @@ message SourceConfig {
   optional bool accelerationNeverRefresh = 16 [default = false];
   optional string tag = 17;
   optional int64 configOrdinal = 18;
+  optional bool allowCrossSourceSelection = 19 [default = false];
+  optional bool checkTableAuthorizer = 20 [default = true];
 }
 
 // Version notes:
@@ -110,6 +112,7 @@ enum LegacySourceType {
   ADL = 22;
   GCS = 23;
   INTERNAL = 24;
+  AWSGLUE = 25;
 }
 
 // Internally computed details about a source. Background tasks will routinely change this data

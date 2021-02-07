@@ -46,7 +46,11 @@
               },
               {
                 "propName": "config.allowCreateDrop"
-              },
+              }
+            ]
+          },
+          {
+            "elements": [
               {
                 "propName": "config.rootPath"
               },
@@ -85,6 +89,7 @@
           },
           {
             "name": "Cache Options",
+            "checkboxController": "enableAsync",
             "elements": [
               {
                 "propName": "config.isCachingEnabled"

@@ -184,7 +184,7 @@ export class AccelerationForm extends Component {
         }
 
         this.setState({waitingForRecommendations: false});
-        this.updateInitialValues();
+        this.updateInitialValues(['aggregationReflections', 'columnsDimensions', 'columnsMeasures']);
       });
     }, error => {
       if (this.unmounted) return;
@@ -198,13 +198,21 @@ export class AccelerationForm extends Component {
     this.setState({waitingForRecommendations: false});
   };
 
-  updateInitialValues() {
+  updateInitialValues(fieldsToUpdate) {
     // let the redux update run so that this.props.values gets updated
     setTimeout(() => {
       //this.props.initializeForm(this.initialValues, true);
-      this.initialValues = {...this.props.values};
-      this.props.updateFormDirtyState(false);
-      this.setState({formIsDirty: false});
+      let isFormDirty = false;
+      if (fieldsToUpdate && fieldsToUpdate.length) {
+        fieldsToUpdate.forEach(field => {
+          this.initialValues[field] = this.props.values[field];
+        });
+        isFormDirty = !deepEqual(this.props.values, this.initialValues);
+      } else {
+        this.initialValues = {...this.props.values};
+      }
+      this.props.updateFormDirtyState(isFormDirty);
+      this.setState({formIsDirty: isFormDirty});
     }, 0);
   }
 
@@ -395,7 +403,7 @@ export class AccelerationForm extends Component {
         // todo: if a delete succeeds and another call fails then we can end up with no reflections of a type
 
         // start with fallback
-        errors[reflectionId] = error.message || la('Something went wrong.');
+        errors[reflectionId] = error.message || la('Something went wrong. Please check the log file for details, see https://docs.dremio.com/advanced-administration/log-files.html');
 
         const {response} = error;
         if (response) {
@@ -443,14 +451,14 @@ export class AccelerationForm extends Component {
 
     return (
       <div>
-        <div style={{float: 'right'}}>
+        <div style={{float: 'right', display: 'flex', marginTop: '5px'}}>
           {mode === 'ADVANCED' && <Button disableSubmit onClick={this.clearReflections} type='CUSTOM' text={la('Remove All Reflections')} />}
           <Button
             disable={mode === 'ADVANCED' && this.getMustBeInAdvancedMode()}
             disableSubmit
             onClick={this.toggleMode}
             type='CUSTOM'
-            style={{ marginLeft: 10, width: 120 }} // lock width the prevent wiggle on toggle
+            style={{ marginLeft: 10, width: 140 }} // lock width the prevent wiggle on toggle
             text={mode === 'BASIC' ? la('Switch to Advanced') : la('Revert to Basic')}
           />
         </div>
@@ -558,13 +566,13 @@ export class AccelerationForm extends Component {
 
   render() {
     const { handleSubmit, onCancel, isModal = true } = this.props;
-    const { formIsDirty } = this.state;
+    const { formIsDirty, waitingForRecommendations } = this.state;
     const modalFormStyle = isModal ? {} : styles.noModalForm;
     const confirmStyle = isModal ? {} : styles.noModalConfirmCancel;
     const cancelText = isModal ? la('Cancel') : la('Revert');
     const onCancelClick = isModal ? onCancel : this.resetForm;
-    const canSubmit = isModal ? true : formIsDirty;
-    const canCancel = isModal ? true : formIsDirty;
+    const canSubmit = isModal ? true : formIsDirty && !waitingForRecommendations;
+    const canCancel = isModal ? true : formIsDirty && !waitingForRecommendations;
 
     return (
       <div style={styles.base}>
@@ -595,7 +603,9 @@ const styles = {
   base: {
     height: '100%',
     display: 'flex',
-    flexDirection: 'column'
+    flexDirection: 'column',
+    maxHeight: 'calc(100vh - 100px)',
+    overflow: 'hidden'
   },
   formBody: {
     height: '100%',

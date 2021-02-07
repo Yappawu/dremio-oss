@@ -15,7 +15,7 @@
  */
 import Immutable from 'immutable';
 
-import localStorageUtils from 'utils/storageUtils/localStorageUtils';
+import localStorageUtils from '@inject/utils/storageUtils/localStorageUtils';
 import FileSaver from 'file-saver';
 
 class FileDownloadError {
@@ -99,6 +99,14 @@ export default class FileUtils {
     }
 
     return `${(bytes / BYTES_IN_TERABYTE).toFixed(2)} TB`;
+  }
+
+  static getDatasetIdForClientTools(dataset) {
+    if (dataset) {
+      return dataset.get('entityId') || dataset.get('id');
+    } else {
+      return '';
+    }
   }
 
 }

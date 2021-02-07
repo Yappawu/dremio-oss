@@ -17,15 +17,14 @@ package com.dremio.exec.server.options;
 
 import java.io.IOException;
 import java.util.AbstractMap;
-import java.util.Iterator;
 import java.util.Map;
 
 import javax.annotation.Nullable;
 import javax.inject.Provider;
 
 import com.dremio.datastore.api.LegacyKVStore;
+import com.dremio.datastore.api.LegacyKVStoreCreationFunction;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
-import com.dremio.datastore.api.LegacyStoreCreationFunction;
 import com.dremio.exec.serialization.InstanceSerializer;
 import com.dremio.options.OptionValue;
 import com.google.common.base.Function;
@@ -39,7 +38,7 @@ import com.google.common.collect.Iterables;
 class OptionValueStore {
 //  private static final Logger logger = LoggerFactory.getLogger(OptionValueStore.class);
 
-  public interface OptionValueStoreCreator extends LegacyStoreCreationFunction<LegacyKVStore<String, byte[]>> {}
+  public interface OptionValueStoreCreator extends LegacyKVStoreCreationFunction<String, byte[]> {}
 
   private final Provider<LegacyKVStoreProvider> kvStoreProvider;
   private final Class<? extends OptionValueStoreCreator> storeCreatorClass;
@@ -89,12 +88,12 @@ class OptionValueStore {
     store.delete(key);
   }
 
-  public Iterator<Map.Entry<String, OptionValue>> getAll() {
+  public Iterable<Map.Entry<String, OptionValue>> getAll() {
     return Iterables.transform(store.find(), new Function<Map.Entry<String, byte[]>, Map.Entry<String, OptionValue>>() {
       @Override
       public Map.Entry<String, OptionValue> apply(@Nullable Map.Entry<String, byte[]> input) {
         return new AbstractMap.SimpleEntry<>(input.getKey(), deserialize(input.getValue()));
       }
-    }).iterator();
+    });
   }
 }

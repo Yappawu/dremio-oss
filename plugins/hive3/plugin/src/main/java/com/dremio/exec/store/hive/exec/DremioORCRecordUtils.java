@@ -20,10 +20,12 @@
  */
 package com.dremio.exec.store.hive.exec;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Range;
 import com.google.common.collect.Sets;
 
-import io.netty.buffer.ArrowBuf;
+
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.ByteBufferUtil;
@@ -179,10 +181,13 @@ public class DremioORCRecordUtils {
     private CompressionKind compressionKind;
     private final BufferAllocator allocator;
     private boolean useDirectMemory = true;
+    private final boolean doComputeLocality;
     private boolean remoteRead = false;
     private final Set<ByteBuffer> buffersToRelease = Sets.newIdentityHashSet();
+    private final Set<ByteBuffer> directBuffersToRelease = Sets.newIdentityHashSet();
 
-    private DefaultDataReader(BufferAllocator allocator, DataReaderProperties properties, boolean useDirectMemory) {
+    private DefaultDataReader(BufferAllocator allocator, DataReaderProperties properties, boolean useDirectMemory,
+                              final boolean doComputeLocality) {
       this.fs = properties.getFileSystem();
       this.path = properties.getPath();
       this.useZeroCopy = properties.getZeroCopy();
@@ -193,6 +198,7 @@ public class DremioORCRecordUtils {
       this.pool = new DremioORCRecordUtils.ByteBufferAllocatorPool(allocator);
       this.allocator = allocator;
       this.useDirectMemory = useDirectMemory;
+      this.doComputeLocality = doComputeLocality;
     }
 
     @Override
@@ -313,7 +319,7 @@ public class DremioORCRecordUtils {
       // if zero copy is set, then try reading using zero copy first
       if (zcr != null) {
         try {
-          return readDiskRangesUsingZCR(fs, file, path, zcr, baseOffset, range);
+          return readDiskRangesUsingZCR(fs, file, path, zcr, pool, baseOffset, range);
         }
         catch (UnsupportedOperationException ioe) {
           // zero copy read failed. Clear all buffers and unset zero copy read
@@ -343,6 +349,11 @@ public class DremioORCRecordUtils {
       }
       buffersToRelease.clear();
 
+      for (ByteBuffer buffer : directBuffersToRelease) {
+        pool.putBuffer(buffer);
+      }
+      directBuffersToRelease.clear();
+
       if (codec != null) {
         OrcCodecPool.returnCodec(compressionKind, codec);
         codec = null;
@@ -368,6 +379,10 @@ public class DremioORCRecordUtils {
 
     @Override
     public void releaseBuffer(ByteBuffer buffer) {
+      if (directBuffersToRelease.remove(buffer)) {
+        pool.putBuffer(buffer);
+        return;
+      }
       buffersToRelease.remove(buffer);
       releaseBufferWithoutTracking(buffer);
     }
@@ -410,8 +425,9 @@ public class DremioORCRecordUtils {
     }
 
     private DiskRangeList readDiskRangesUsingZCR(FileSystem fs, FSDataInputStream file,
-                                                 Path path, HadoopShims.ZeroCopyReaderShim zcr, long base, DiskRangeList range) throws IOException {
-      return readDiskRanges(fs, file, path, zcr, null, true, base, range);
+                                                 Path path, HadoopShims.ZeroCopyReaderShim zcr,
+                                                 ByteBufferAllocatorPool pool, long base, DiskRangeList range) throws IOException {
+      return readDiskRanges(fs, file, path, zcr, pool, true, base, range);
     }
 
 
@@ -483,7 +499,9 @@ public class DremioORCRecordUtils {
       if (range == null) {
         return null;
       }
-      computeLocality(fs, path, range);
+      if (doComputeLocality) {
+        computeLocality(fs, path, range);
+      }
       DiskRangeList prev = range.prev;
       if (prev == null) {
         prev = new DiskRangeList.MutateHelper(range);
@@ -497,7 +515,7 @@ public class DremioORCRecordUtils {
         long off = range.getOffset();
         if (useDirectMemory) {
           file.seek(base + off);
-          boolean hasReplaced = false;
+          List<ByteBuffer> bytes = new ArrayList<>();
           while (len > 0) {
             ByteBuffer partial;
             if (zcr != null) {
@@ -507,20 +525,36 @@ public class DremioORCRecordUtils {
               // hadoop client uses following call to read using direct memory
               partial = ByteBufferUtil.fallbackRead(file, pool, len);
             }
+            bytes.add(partial);
             buffersToRelease.add(partial);
-
-            BufferChunk bc = new BufferChunk(partial, off);
-            if (!hasReplaced) {
-              range.replaceSelfWith(bc);
-              hasReplaced = true;
-            } else {
-              range.insertAfter(bc);
-            }
-            range = bc;
             int read = partial.remaining();
             len -= read;
             off += read;
           }
+
+          ByteBuffer chunkBuffer;
+          long chunkOffset = range.getOffset();
+          int chunkLength = (int) (range.getEnd() - range.getOffset());
+          if (bytes.size() > 1) {
+            if (pool != null) {
+              chunkBuffer = pool.getBuffer(true, chunkLength);
+              directBuffersToRelease.add(chunkBuffer);
+            } else {
+              byte[] buffer = new byte[chunkLength];
+              chunkBuffer = ByteBuffer.wrap(buffer);
+            }
+            for (ByteBuffer byteBuffer : bytes) {
+              chunkBuffer.put(byteBuffer.duplicate());
+              releaseBuffer(byteBuffer);
+            }
+            chunkBuffer.flip();
+          } else {
+            Preconditions.checkState(bytes.size() == 1, "Empty bytes found");
+            chunkBuffer = bytes.get(0);
+          }
+          BufferChunk bc = new BufferChunk(chunkBuffer, chunkOffset);
+          range.replaceSelfWith(bc);
+          range = bc;
         } else {
           byte[] buffer = new byte[len];
           file.readFully((base + off), buffer, 0, buffer.length);
@@ -537,8 +571,9 @@ public class DremioORCRecordUtils {
     }
   }
 
-  public static DremioORCRecordUtils.DefaultDataReader createDefaultDataReader(BufferAllocator allocator, DataReaderProperties properties, boolean useDirectMemory) {
-    return new DremioORCRecordUtils.DefaultDataReader(allocator, properties, useDirectMemory);
+  public static DremioORCRecordUtils.DefaultDataReader createDefaultDataReader(BufferAllocator allocator, DataReaderProperties properties,
+                                                                               boolean useDirectMemory, final boolean doComputeLocality) {
+    return new DremioORCRecordUtils.DefaultDataReader(allocator, properties, useDirectMemory, doComputeLocality);
   }
 
   /*

@@ -63,6 +63,7 @@ class AzureStoragePlugin extends FileSystemPlugin<AzureStorageConf> {
 
   @Override
   public SourceState getState() {
+    String sourceName = getConfig().getPath().toString();
     try {
       ensureDefaultName();
       AzureStorageFileSystem fs = getSystemUserFS().unwrap(AzureStorageFileSystem.class);
@@ -82,7 +83,8 @@ class AzureStoragePlugin extends FileSystemPlugin<AzureStorageConf> {
       return SourceState.warnState(sb.toString());
 
     } catch (Exception e) {
-      return SourceState.badState(e);
+      return SourceState.badState(
+        String.format("Could not connect to %s. Check your settings and credentials", sourceName), e);
     }
   }
 

@@ -15,10 +15,10 @@
  */
 package com.dremio.exec.record.selection;
 
+import org.apache.arrow.memory.ArrowBuf;
+
 import com.dremio.exec.record.DeadBuf;
 import com.google.common.base.Preconditions;
-
-import io.netty.buffer.ArrowBuf;
 
 public class SelectionVector4 implements AutoCloseable {
   // private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(SelectionVector4.class);
@@ -44,6 +44,14 @@ public class SelectionVector4 implements AutoCloseable {
 
   public int getCount() {
     return length;
+  }
+
+  /**
+   * Get location of current start point.
+   * @return Memory address where current batch starts.
+   */
+  public long getMemoryAddress() {
+    return data.memoryAddress() + start * 4;
   }
 
   public void set(int index, int compound) {

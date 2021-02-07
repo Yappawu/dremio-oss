@@ -28,9 +28,9 @@ import com.dremio.dac.explore.QueryExecutor;
 import com.dremio.dac.explore.join.JobsBasedRecommender;
 import com.dremio.dac.explore.join.JoinRecommender;
 import com.dremio.dac.model.sources.FormatTools;
-import com.dremio.dac.server.BufferAllocatorFactory;
 import com.dremio.dac.server.DACSecurityContext;
 import com.dremio.dac.server.test.SampleDataPopulator;
+import com.dremio.dac.server.tokens.TokenInfo;
 import com.dremio.dac.service.catalog.CatalogServiceHelper;
 import com.dremio.dac.service.collaboration.CollaborationHelper;
 import com.dremio.dac.service.datasets.DatasetVersionMutator;
@@ -41,6 +41,7 @@ import com.dremio.exec.catalog.DatasetCatalog;
 import com.dremio.exec.catalog.EntityExplorer;
 import com.dremio.exec.catalog.MetadataRequestOptions;
 import com.dremio.exec.catalog.SourceCatalog;
+import com.dremio.exec.ops.ReflectionContext;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.store.CatalogService;
 import com.dremio.exec.store.SchemaConfig;
@@ -50,18 +51,17 @@ import com.dremio.service.BinderImpl.Binding;
 import com.dremio.service.BinderImpl.InstanceBinding;
 import com.dremio.service.BinderImpl.SingletonBinding;
 import com.dremio.service.SingletonRegistry;
+import com.dremio.service.reflection.ReflectionAdministrationService;
 
 /**
  * Class to bind resources to HK2 injector.
  */
 public class DremioBinder extends AbstractBinder {
 
-  private final SingletonRegistry bindings;
-  private final BufferAllocatorFactory allocatorFactory;
+  private SingletonRegistry bindings;
 
-  public DremioBinder(SingletonRegistry bindings, BufferAllocatorFactory allocatorFactory) {
+  public DremioBinder(SingletonRegistry bindings) {
     this.bindings = bindings;
-    this.allocatorFactory = allocatorFactory;
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -101,11 +101,16 @@ public class DremioBinder extends AbstractBinder {
     bindFactory(OptionManagerFactory.class).to(OptionManager.class);
     bind(JobsBasedRecommender.class).to(JoinRecommender.class);
     bind(DACSecurityContext.class).in(RequestScoped.class).to(SecurityContext.class);
+    bindFactory(TokenInfo.Factory.class).proxy(true).in(RequestScoped.class).to(TokenInfo.class);
     bindFactory(CatalogFactory.class).proxy(true).in(RequestScoped.class).to(Catalog.class);
     bindFactory(CatalogFactory.class).proxy(true).in(RequestScoped.class).to(EntityExplorer.class);
     bindFactory(CatalogFactory.class).proxy(true).in(RequestScoped.class).to(DatasetCatalog.class);
     bindFactory(CatalogFactory.class).proxy(true).in(RequestScoped.class).to(SourceCatalog.class);
-    bind(allocatorFactory);
+    bindReflectionFactory();
+  }
+
+  protected void bindReflectionFactory() {
+    bindFactory(ReflectionAdministrationServiceFactory.class).proxy(true).in(RequestScoped.class).to(ReflectionAdministrationService.class);
   }
 
   private <T> ClassBinding<T> bindToSelf(Class<T> serviceType) {
@@ -149,6 +154,26 @@ public class DremioBinder extends AbstractBinder {
     @Override
     public OptionManager get() {
       return context.getOptionManager();
+    }
+  }
+
+  /**
+   * Factory
+   */
+  public static class ReflectionAdministrationServiceFactory implements Supplier<ReflectionAdministrationService> {
+    private final ReflectionAdministrationService.Factory factory;
+    private final SecurityContext securityContext;
+
+    @Inject
+    public ReflectionAdministrationServiceFactory(ReflectionAdministrationService.Factory reflectionAdministrationServiceFactory,
+                                                  SecurityContext securityContext) {
+      this.factory = reflectionAdministrationServiceFactory;
+      this.securityContext = securityContext;
+    }
+
+    @Override
+    public ReflectionAdministrationService get() {
+      return factory.get(new ReflectionContext(securityContext.getUserPrincipal().getName(), true));
     }
   }
 }

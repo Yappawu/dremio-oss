@@ -55,13 +55,13 @@ export function getColumnFilter(state) {
   return entities.getIn(['tableData', 'columnFilter']) || '';
 }
 
-export function getJobProgress(state) {
+export function getJobProgress(state, version) {
   const { entities } = state.resources;
-  return entities.getIn(['tableData', 'jobProgress']) || null;
+  return entities.getIn(['tableData', version, 'jobProgress']) || null;
 }
 
-export function getJobOutputRecords(state) {
-  const jobProgress = getJobProgress(state);
+export function getJobOutputRecords(state, version) {
+  const jobProgress = getJobProgress(state, version);
   const datasetVersion = jobProgress && jobProgress.datasetVersion;
   const tableData = getTableDataRaw(state, datasetVersion);
   return tableData && tableData.get('outputRecords');
@@ -172,7 +172,7 @@ const getInitialDataset = (location, viewState) => {
   const routeParams = getRouteParamsFromLocation(location);
   const version = location.query.version;
   const displayFullPath = viewState.getIn(['error', 'details', 'displayFullPath']) ||
-    [...splitFullPath(routeParams.resourceId), ...splitFullPath(routeParams.tableId)];
+    [routeParams.resourceId, ...splitFullPath(routeParams.tableId)];
   const fullPath = location.query.mode === 'edit' ? displayFullPath : ['tmp', 'UNTITLED'];
 
   return Immutable.fromJS({
@@ -284,6 +284,10 @@ export const getHistoryItems = createSelector(
   historyItems => historyItems
 );
 
+export function getCurrentEngine(state) {
+  const exploreState = getExploreState(state);
+  return exploreState.view.currentEngin;
+}
 
 export const exploreStateKey = 'explorePage'; // a key that would be used for dynamic redux state
 export const getExploreState = state => getModuleState(state, exploreStateKey);

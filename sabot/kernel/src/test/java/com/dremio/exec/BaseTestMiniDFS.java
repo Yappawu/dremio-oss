@@ -50,20 +50,16 @@ public class BaseTestMiniDFS extends PlanTestBase {
   protected static String miniDfsStoragePath;
 
   /**
-   * Start a MiniDFS cluster backed SabotNode cluster with impersonation enabled.
-   * @param testClass
-   * @throws Exception
-   */
-  protected static void startMiniDfsCluster(String testClass) throws Exception {
-    startMiniDfsCluster(testClass, new Configuration());
-  }
-
-  /**
    * Start a MiniDFS cluster backed SabotNode cluster
    * @param testClass
-   * @param isImpersonationEnabled Enable impersonation in the cluster?
    * @throws Exception
    */
+  protected static Configuration startMiniDfsCluster(String testClass) throws Exception {
+    Configuration configuration = new Configuration();
+    startMiniDfsCluster(testClass, configuration);
+    return configuration;
+  }
+
   protected static void startMiniDfsCluster(final String testClass, Configuration configuration) throws Exception {
     Preconditions.checkArgument(!Strings.isNullOrEmpty(testClass), "Expected a non-null and non-empty test class name");
     dfsConf = Preconditions.checkNotNull(configuration);
@@ -86,8 +82,7 @@ public class BaseTestMiniDFS extends PlanTestBase {
     fs = dfsCluster.getFileSystem();
   }
 
-  protected static void addMiniDfsBasedStorage(final Map<String, WorkspaceConfig> workspaces,
-      boolean impersonationEnabled) throws Exception {
+  protected static void addMiniDfsBasedStorage(boolean impersonationEnabled) throws Exception {
     // Create a HDFS based storage plugin (connection string for mini dfs is varies for each run).
 
     final CatalogService catalogService = getSabotContext().getCatalogService();
@@ -117,7 +112,7 @@ public class BaseTestMiniDFS extends PlanTestBase {
     workspaces.put(name, ws);
   }
 
-  protected static void stopMiniDfsCluster() throws Exception {
+  protected static void stopMiniDfsCluster() {
     if (dfsCluster != null) {
       dfsCluster.shutdown();
       dfsCluster = null;

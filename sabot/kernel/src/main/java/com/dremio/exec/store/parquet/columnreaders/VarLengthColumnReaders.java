@@ -18,6 +18,7 @@ package com.dremio.exec.store.parquet.columnreaders;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.util.LargeMemoryUtil;
 import org.apache.arrow.vector.DecimalHelper;
 import org.apache.arrow.vector.DecimalVector;
@@ -29,8 +30,6 @@ import org.apache.parquet.format.SchemaElement;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
-
-import io.netty.buffer.ArrowBuf;
 
 public class VarLengthColumnReaders {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(VarLengthColumnReaders.class);
@@ -58,7 +57,7 @@ public class VarLengthColumnReaders {
         return false;
       }
       /* this will swap bytes as we are writing to the buffer of DecimalVector */
-      DecimalUtility.writeBigDecimalToArrowBuf(intermediate, decimalVector.getDataBuffer(), index);
+      DecimalUtility.writeBigDecimalToArrowBuf(intermediate, decimalVector.getDataBuffer(), index, DecimalVector.TYPE_WIDTH);
       decimalVector.setIndexDefined(index);
       return true;
     }
@@ -92,7 +91,7 @@ public class VarLengthColumnReaders {
         return false;
       }
       /* this will swap bytes as we are writing to the buffer of DecimalVector */
-      DecimalUtility.writeBigDecimalToArrowBuf(intermediate, decimalVector.getDataBuffer(), index);
+      DecimalUtility.writeBigDecimalToArrowBuf(intermediate, decimalVector.getDataBuffer(), index, DecimalVector.TYPE_WIDTH);
       decimalVector.setIndexDefined(index);
       return true;
     }

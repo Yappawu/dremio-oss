@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.BitVectorHelper;
@@ -37,8 +38,6 @@ import com.dremio.common.AutoCloseables;
 import com.dremio.sabot.BaseTestWithAllocator;
 import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableList;
-
-import io.netty.buffer.ArrowBuf;
 
 public class TestPivotRoundtrip extends BaseTestWithAllocator {
   private static final int WORD_BITS = 64;
@@ -214,7 +213,7 @@ public class TestPivotRoundtrip extends BaseTestWithAllocator {
           // all set
           for (int j = 0; j < WORD_BITS; j++) {
             BigDecimal val = BigDecimal.valueOf(i + j + ((double) (i + j) / count)).setScale(0, RoundingMode.HALF_UP);
-            DecimalUtility.writeBigDecimalToArrowBuf(val, tempBuf, 0);
+            DecimalUtility.writeBigDecimalToArrowBuf(val, tempBuf, 0, DecimalVector.TYPE_WIDTH);
             in.set(i + j, tempBuf);
           }
         } else if ((i / WORD_BITS) % 3 == 1) {
@@ -222,7 +221,7 @@ public class TestPivotRoundtrip extends BaseTestWithAllocator {
           for (int j = 0; j < WORD_BITS; j++) {
             if (j % 3 == 0) {
               BigDecimal val = BigDecimal.valueOf(i + j + ((double) (i + j) / count)).setScale(0, RoundingMode.HALF_UP);
-              DecimalUtility.writeBigDecimalToArrowBuf(val, tempBuf, 0);
+              DecimalUtility.writeBigDecimalToArrowBuf(val, tempBuf, 0, DecimalVector.TYPE_WIDTH);
               in.set(i + j, tempBuf);
             }
           }

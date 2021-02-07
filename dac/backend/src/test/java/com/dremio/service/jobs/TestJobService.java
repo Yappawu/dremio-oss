@@ -16,18 +16,28 @@
 package com.dremio.service.jobs;
 
 import static com.dremio.dac.server.JobsServiceTestUtils.toSubmitJobRequest;
+import static com.dremio.exec.testing.ExecutionControls.DEFAULT_CONTROLS;
+import static com.dremio.exec.work.foreman.AttemptManager.INJECTOR_DURING_PLANNING_PAUSE;
+import static com.dremio.exec.work.foreman.AttemptManager.INJECTOR_PLAN_PAUSE;
+import static com.dremio.service.users.SystemUser.SYSTEM_USERNAME;
 import static java.util.Arrays.asList;
+import static java.util.UUID.randomUUID;
 import static javax.ws.rs.client.Entity.entity;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 
 import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.junit.Before;
@@ -36,16 +46,17 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
+import org.mockito.Mockito;
 
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.exceptions.UserRemoteException;
 import com.dremio.common.utils.protos.AttemptId;
 import com.dremio.common.utils.protos.AttemptIdUtils;
 import com.dremio.common.utils.protos.ExternalIdHelper;
+import com.dremio.common.utils.protos.QueryIdHelper;
 import com.dremio.dac.explore.model.DatasetPath;
 import com.dremio.dac.model.job.AttemptDetailsUI;
 import com.dremio.dac.model.job.AttemptsUIHelper;
-import com.dremio.dac.model.job.JobDataWrapper;
 import com.dremio.dac.model.job.JobDetailsUI;
 import com.dremio.dac.model.job.JobFailureInfo;
 import com.dremio.dac.model.job.JobFailureType;
@@ -58,13 +69,23 @@ import com.dremio.datastore.SearchTypes.SortOrder;
 import com.dremio.datastore.api.LegacyKVStore;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.dremio.exec.ExecConstants;
+import com.dremio.exec.planner.DremioHepPlanner;
+import com.dremio.exec.planner.DremioVolcanoPlanner;
 import com.dremio.exec.proto.UserBitShared;
+import com.dremio.exec.proto.beans.AttemptEvent;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.store.CatalogService;
 import com.dremio.exec.store.dfs.FileSystemPlugin;
+import com.dremio.exec.testing.Controls;
+import com.dremio.exec.testing.ExecutionControls;
+import com.dremio.exec.testing.Injection;
+import com.dremio.exec.work.foreman.AttemptManager;
+import com.dremio.exec.work.protector.ForemenWorkManager;
 import com.dremio.options.OptionValue;
 import com.dremio.options.OptionValue.OptionType;
 import com.dremio.proto.model.attempts.AttemptReason;
+import com.dremio.sabot.exec.CancelQueryContext;
+import com.dremio.sabot.exec.CoordinatorHeapClawBackStrategy;
 import com.dremio.service.job.JobCountsRequest;
 import com.dremio.service.job.JobDetailsRequest;
 import com.dremio.service.job.JobSummary;
@@ -78,34 +99,34 @@ import com.dremio.service.job.proto.JobInfo;
 import com.dremio.service.job.proto.JobState;
 import com.dremio.service.job.proto.QueryType;
 import com.dremio.service.job.proto.ResourceSchedulingInfo;
+import com.dremio.service.jobs.LocalJobsService.OnlineProfileCleanup;
 import com.dremio.service.jobtelemetry.server.store.LocalProfileStore;
 import com.dremio.service.namespace.NamespaceKey;
 import com.dremio.service.namespace.dataset.DatasetVersion;
 import com.dremio.service.namespace.dataset.proto.FieldOrigin;
 import com.dremio.service.namespace.dataset.proto.Origin;
 import com.dremio.service.namespace.space.proto.SpaceConfig;
-import com.dremio.service.users.SystemUser;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 
 /**
  * Tests for job service.
  */
 public class TestJobService extends BaseTestServer {
-  private static CountDownLatch testCancelLatch;
-
   @Rule
   public ExpectedException thrown = ExpectedException.none();
 
   @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
   private HybridJobsService jobsService;
   private LocalJobsService localJobsService;
+  private ForemenWorkManager foremenWorkManager;
 
   @Before
   public void setup() throws Exception {
     clearAllDataExceptUser();
     jobsService = (HybridJobsService) l(JobsService.class);
-    testCancelLatch = new CountDownLatch(1);
     localJobsService = l(LocalJobsService.class);
+    foremenWorkManager = l(ForemenWorkManager.class);
   }
 
   private com.dremio.service.job.JobDetails getJobDetails(Job job) {
@@ -119,19 +140,25 @@ public class TestJobService extends BaseTestServer {
     }
   }
 
-  public static CountDownLatch getTestCancelLatch() {
-    return testCancelLatch;
+  public static void failFunction() {
+    throw UserException.dataReadError().message("expected failure").buildSilently();
   }
 
+  // Test cancelling query past the planning phase.
   @Test
   public void testCancel() throws Exception {
     final JobSubmittedListener jobSubmittedListener = new JobSubmittedListener();
     final CompletionListener completionListener = new CompletionListener();
-    JobRequest request = JobRequest.newBuilder()
-      .setSqlQuery(new SqlQuery("select wait()", null, DEFAULT_USERNAME))
+    final String testKey = TestingFunctionHelper.newKey(() -> {});
+
+    final JobRequest request = JobRequest.newBuilder()
+      .setSqlQuery(new SqlQuery(String.format("SELECT WAIT(key, 5) FROM (VALUES('%s')) tbl(key)", testKey), null, DEFAULT_USERNAME))
       .build();
     final JobId jobId = jobsService.submitJob(toSubmitJobRequest(request), new MultiJobStatusListener(completionListener, jobSubmittedListener));
     jobSubmittedListener.await();
+
+    // sleep until query reaches starting state and then cancel query below.
+    sleepUntilQueryState(jobId, AttemptEvent.State.STARTING);
 
     NotificationResponse response = expectSuccess(
       getBuilder(
@@ -141,11 +168,163 @@ public class TestJobService extends BaseTestServer {
           .path("cancel")
       ).buildPost(entity(null, JSON)), NotificationResponse.class);
     completionListener.await();
-    testCancelLatch.countDown();
 
     assertEquals("Job cancellation requested", response.getMessage());
     assertEquals(NotificationResponse.ResponseType.OK, response.getType());
   }
+
+  // Sleep until query state reaches given state
+  private void sleepUntilQueryState(JobId jobId, AttemptEvent.State state) throws Exception {
+    while (true) {
+      Thread.sleep(100);
+      Job job = getJob(jobId);
+      long count =  job.getJobAttempt()
+                       .getStateListList()
+                       .stream()
+                       .map(e->e.getState())
+                       .filter(s->state.equals(s))
+                       .count();
+      if (count == 1) {
+        break;
+      }
+    }
+  }
+
+  private void injectPauses(String controls) throws Exception {
+    ObjectMapper objectMapper = spy(new ObjectMapper());
+    objectMapper.addMixInAnnotations(Injection.class, ExecutionControls.InjectionMixIn.class);
+    ExecutionControls.Controls execControls = objectMapper.readValue(controls, ExecutionControls.Controls.class);
+    Mockito.doReturn(execControls).when(objectMapper).readValue(DEFAULT_CONTROLS, ExecutionControls.Controls.class);
+    ExecutionControls.setControlsOptionMapper(objectMapper);
+  }
+
+  private Job getJob(JobId jobId) throws Exception {
+    GetJobRequest getJobRequest = GetJobRequest.newBuilder()
+                                               .setJobId(jobId)
+                                               .setUserName(SYSTEM_USERNAME)
+                                               .build();
+    return localJobsService.getJob(getJobRequest);
+  }
+
+  /**
+   * Test cancelling of query/job in planning
+   */
+  @Test
+  public void testCancelPlanning() throws Exception {
+    try {
+      String controls = Controls.newBuilder()
+                                .addPause(DremioVolcanoPlanner.class, INJECTOR_DURING_PLANNING_PAUSE)
+                                .addPause(DremioHepPlanner.class, INJECTOR_DURING_PLANNING_PAUSE)
+                                .build();
+      injectPauses(controls);
+      AttemptEvent.State[] observedAttemptStates = executeQueryAndCancel(true);
+      AttemptEvent.State[] expectedAttemptStates =
+        new AttemptEvent.State[] { AttemptEvent.State.PENDING,
+                                   AttemptEvent.State.METADATA_RETRIEVAL,
+                                   AttemptEvent.State.PLANNING,
+                                   AttemptEvent.State.FAILED };
+
+      assertArrayEquals("Since we paused during planning, there should be AttemptEvent.State.PLANNING" +
+                        " before AttemptEvent.State.FAILED.",
+                        expectedAttemptStates, observedAttemptStates);
+    } catch(Exception e) {
+      throw e;
+    } finally {
+      // reset, irrespective any exception, so that other test cases are not affected.
+      ExecutionControls.setControlsOptionMapper(new ObjectMapper());
+    }
+  }
+
+  /**
+   * Test cancelling of query/job by heap monitor after planning phase.
+   * Query should NOT be canceled since heap monitor should only cancel queries
+   * in planning phase.
+   */
+  @Test
+  public void testQueryCancelByHeapMonitorAfterPlanning() throws Exception {
+    try {
+      String controls = Controls.newBuilder()
+                                .addPause(AttemptManager.class, INJECTOR_PLAN_PAUSE)
+                                .build();
+      injectPauses(controls);
+      AttemptEvent.State[] observedAttemptStates = executeQueryAndCancel(false);
+      assertEquals("Query should be completed successfully if heap monitor tried to cancel " +
+                   "query after planning phase.",
+                   AttemptEvent.State.COMPLETED,
+                   observedAttemptStates[observedAttemptStates.length-1]);
+    } catch(Exception e) {
+      throw e;
+    } finally {
+      // reset, irrespective any exception, so that other test cases are not affected.
+      ExecutionControls.setControlsOptionMapper(new ObjectMapper());
+    }
+  }
+
+
+  private AttemptEvent.State[] executeQueryAndCancel(boolean verifyFailed) throws Exception {
+    final JobSubmittedListener jobSubmittedListener = new JobSubmittedListener();
+    final CompletionListener completionListener = new CompletionListener();
+    final String testKey = TestingFunctionHelper.newKey(() -> {});
+
+    SqlQuery sqlQuery = new SqlQuery(String.format("SELECT WAIT(key, 5) FROM (VALUES('%s')) tbl(key)", testKey),
+                                     null, DEFAULT_USERNAME);
+    final JobRequest request = JobRequest.newBuilder()
+                                         .setSqlQuery(sqlQuery)
+                                         .build();
+    final JobId jobId = jobsService.submitJob(toSubmitJobRequest(request),
+                                              new MultiJobStatusListener(completionListener, jobSubmittedListener));
+    UserBitShared.ExternalId externalId = ExternalIdHelper.toExternal(QueryIdHelper.getQueryIdFromString(jobId.getId()));
+
+    GetJobRequest getJobRequest = GetJobRequest.newBuilder()
+                                               .setJobId(jobId)
+                                               .setUserName(SYSTEM_USERNAME)
+                                               .build();
+    jobSubmittedListener.await();
+
+    // wait for the injected pause to be hit
+    Thread.sleep(3000);
+
+    CancelQueryContext cancelQueryContext = CoordinatorHeapClawBackStrategy.getCancelQueryContext();
+    String cancelReason = cancelQueryContext.getCancelReason();
+    String cancelContext = cancelQueryContext.getCancelContext();
+    // cancel query in planning phase
+    foremenWorkManager.cancel(cancelQueryContext);
+
+    // resume the pause
+    foremenWorkManager.resume(externalId);
+
+    // Observed exception
+    Exception observedEx = null;
+
+    // wait for cancel to take effect.
+    try {
+      completionListener.await();
+    } catch (Exception e) {
+      observedEx = e;
+    }
+
+    Job job = localJobsService.getJob(getJobRequest);
+    if (verifyFailed) {
+      assertTrue(UserRemoteException.class.equals(observedEx.getClass()));
+      UserBitShared.DremioPBError error = ((UserRemoteException) observedEx).getOrCreatePBError(false);
+      assertEquals(cancelReason, error.getOriginalMessage());
+      assertEquals(l(SabotContext.class).getEndpoint(), error.getEndpoint());
+      assertTrue("Cancel context should be in returned error context", error.getContextList().contains(cancelContext));
+
+      assertEquals("Job is expected to be in FAILED state",
+                   JobState.FAILED,
+                   job.getJobAttempt().getState());
+    }
+
+    AttemptEvent.State[] observedAttemptStates = job.getJobAttempt()
+                                                    .getStateListList()
+                                                    .stream()
+                                                    .map(e->e.getState())
+                                                    .collect(Collectors.toList())
+                                                    .toArray(new AttemptEvent.State[0]);
+    return observedAttemptStates;
+  }
+
 
   @Test
   public void testJobPlanningTime() throws Exception {
@@ -236,21 +415,21 @@ public class TestJobService extends BaseTestServer {
     // retrieve the UI jobDetails
     JobDetailsUI detailsUI = new JobDetailsUI(job.getJobId(), new JobDetails(), JobResource.getPaginationURL(job.getJobId()), job.getAttempts(), JobResource.getDownloadURL(getJobDetails(job)), null, null, null, false, null, null);
 
-    assertEquals("Enqueued time of second attempt was not 0.", (long)detailsUI.getAttemptDetails().get(1).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of second attempt was not 0.", (long)detailsUI.getAttemptDetails().get(1).getQueuedTime(), 0L);
     assertEquals("Planning time of second attempt was not 0.", (long)detailsUI.getAttemptDetails().get(1).getPlanningTime(), 0L);
-    assertEquals("Enqueued time of third attempt was not 0.", (long)detailsUI.getAttemptDetails().get(2).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of third attempt was not 0.", (long)detailsUI.getAttemptDetails().get(2).getQueuedTime(), 0L);
     assertEquals("Planning time of third attempt was not 0.", (long)detailsUI.getAttemptDetails().get(2).getPlanningTime(), 0L);
-    assertEquals("Enqueued time of fourth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(3).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of fourth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(3).getQueuedTime(), 0L);
     assertEquals("Planning time of fourth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(3).getPlanningTime(), 0L);
-    assertEquals("Enqueued time of fifth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(4).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of fifth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(4).getQueuedTime(), 0L);
     assertEquals("Planning time of fifth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(4).getPlanningTime(), 0L);
-    assertEquals("Enqueued time of sixth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(5).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of sixth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(5).getQueuedTime(), 0L);
     assertEquals("Planning time of sixth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(5).getPlanningTime(), 0L);
-    assertEquals("Enqueued time of seventh attempt was not 0.", (long)detailsUI.getAttemptDetails().get(6).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of seventh attempt was not 0.", (long)detailsUI.getAttemptDetails().get(6).getQueuedTime(), 0L);
     assertEquals("Planning time of seventh attempt was not 0.", (long)detailsUI.getAttemptDetails().get(6).getPlanningTime(), 0L);
-    assertEquals("Enqueued time of eighth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(7).getEnqueuedTime(), 0L);
+    assertEquals("Enqueued time of eighth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(7).getQueuedTime(), 0L);
     assertEquals("Planning time of eighth attempt was not 0.", (long)detailsUI.getAttemptDetails().get(7).getPlanningTime(), 0L);
-    assertTrue("Enqueued time of final attempt was less than 0.", detailsUI.getAttemptDetails().get(8).getEnqueuedTime() >= 0);
+    assertTrue("Enqueued time of final attempt was less than 0.", detailsUI.getAttemptDetails().get(8).getQueuedTime() >= 0);
     assertEquals("Planning time of final attempt was not 0.", (long)detailsUI.getAttemptDetails().get(8).getPlanningTime(), 0L);
   }
 
@@ -968,10 +1147,12 @@ public class TestJobService extends BaseTestServer {
 
     LegacyKVStoreProvider provider = l(LegacyKVStoreProvider.class);
 
-    LocalJobsService.DeleteResult deleteResult =
-      l(LocalJobsService.class).deleteOldJobsAndProfiles(10);
-    assertEquals(1, deleteResult.getJobsDeleted());
-    assertEquals(1, deleteResult.getProfilesDeleted());
+    final OnlineProfileCleanup onlineProfileCleanup = l(LocalJobsService.class).new OnlineProfileCleanup();
+    List<Long> deleteResult =
+      l(LocalJobsService.class).deleteOldJobsAndProfiles(onlineProfileCleanup, provider ,10);
+    assertTrue("Expect deleted 1 job, but was " + deleteResult.get(0),1 == deleteResult.get(0));
+    assertTrue("Expect deleted 1 profile, but was " + deleteResult.get(1), 1 == deleteResult.get(1));
+    assertTrue("Expect 0 failure, but was " + deleteResult.get(1), 0 == deleteResult.get(2));
 
     LegacyKVStore<AttemptId, UserBitShared.QueryProfile> profileStore =
       provider.getStore(LocalProfileStore.KVProfileStoreCreator.class);
@@ -1174,59 +1355,97 @@ public class TestJobService extends BaseTestServer {
 
   @Test
   public void testExceptionPropagation() throws Exception {
-    final String attemptId = AttemptIdUtils.toString(new AttemptId());
+    final JobSubmittedListener jobSubmittedListener = new JobSubmittedListener();
+    final CompletionListener completionListener = new CompletionListener();
+    final String testKey = TestingFunctionHelper.newKey(TestJobService::failFunction);
 
-    Job job = createJob("A1", Arrays.asList("space1", "ds1"), "v1", "A", "space1", JobState.FAILED, "select * from LocalFS1.\"dac-sample1.json\"", 100L, 110L, QueryType.UI_RUN);
-    job.getJobAttempt().setDetails(new JobDetails());
-    job.getJobAttempt().setAttemptId(attemptId);
+    final JobRequest request = JobRequest.newBuilder()
+      .setSqlQuery(new SqlQuery(String.format("SELECT WAIT(key, 5) FROM (VALUES('%s')) tbl(key)", testKey), null, DEFAULT_USERNAME))
+      .build();
+    final JobId jobId = jobsService.submitJob(toSubmitJobRequest(request), new MultiJobStatusListener(completionListener, jobSubmittedListener));
+    jobSubmittedListener.await();
 
-    CountDownLatch latch = new CountDownLatch(0);
-    JobLoader jobLoader = new FailedJobLoader();
-    job.setData(new JobDataImpl(jobLoader, job.getJobId(), latch));
+    // Try to get job data while job is still running. The getJobData call implicitly waits for the Job to complete.
+    // We expect the exception to be propagated through Arrow Flight and automatically converted to UserException
+    final Throwable[] throwable = new Throwable[1];
+    Thread t1 = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        try (JobDataFragment jobDataFragment = JobDataClientUtils.getJobData(
+          jobsService, l(BufferAllocator.class), jobId, 0, 1)) {
+          throwable[0] = new AssertionError("Job data call should not have succeeded");
+        } catch (Exception e) {
+          throwable[0] = e;
+        }
+      }
+    });
+    t1.start();
 
-    localJobsService.storeJob(job);
-    localJobsService.getJobResultsStore().cacheNewJob(job.getJobId(), job.getData());
+    // release testLatch so the job can fail
+    TestingFunctionHelper.trigger(testKey);
+    t1.join();
 
-    // Access JobData as Rest Resources would via the DAC version of JobDataWrapper
-    JobDataWrapper jobDataWrapper = new JobDataWrapper(
-      jobsService, job.getJobId(), SystemUser.SYSTEM_USERNAME);
+    // check that the exception is from the failed job
     try {
-      jobDataWrapper.range(mock(BufferAllocator.class), 0, 1);
-      throw new AssertionError("No exception was propagated");
-    } catch (UserRemoteException ure) {
-      assertEquals(FailedJobLoader.EXPECTED_MESSAGE, ure.getOriginalMessage());
-    } catch (Exception e) {
+      throw throwable[0];
+    } catch (UserException uex) {
+      assertEquals("expected failure", uex.getOriginalMessage());
+    } catch (Throwable t) {
       throw new AssertionError(String.format(
-        "Got exception of type %s instead of UserRemoteException", e.getClass().getName()));
+        "Got exception of type %s instead of UserRemoteException", t.getClass().getName()));
     }
-
   }
 
   /**
-   * Test Class for JobLoader that always throws exception. This is equivalent to a Job failure
-   * that stores its exception as a Deferred Exception.
+   * Factory for providing latches and runnables to Functions
    */
-  private static class FailedJobLoader implements JobLoader {
-    public static final String EXPECTED_MESSAGE = "This is the expected message for FailedJobLoader!";
-    @Override
-    public RecordBatches load(int offset, int limit) {
-      throw UserException.dataReadError()
-        .message(EXPECTED_MESSAGE)
-        .build();
+  public static class TestingFunctionHelper {
+    private static final Map<String, CountDownLatch> latches = new ConcurrentHashMap<>();
+    private static final Map<String, Runnable> runnables = new ConcurrentHashMap<>();
+
+    /**
+     * Get a new key and register a new latch and provided runnable to it
+     */
+    public static String newKey(Runnable runnable) {
+      final String key = randomUUID().toString();
+      final CountDownLatch latch = new CountDownLatch(1);
+      latches.put(key, latch);
+      runnables.put(key, runnable);
+      return key;
     }
 
-    @Override
-    public void waitForCompletion() {
-      throw UserException.dataReadError()
-        .message(EXPECTED_MESSAGE)
-        .build();
+    /**
+     * For a given key, wait on its latch, then run its runnable
+     */
+    public static void tryRun(String key, long timeout, TimeUnit unit) {
+      final CountDownLatch latch = latches.get(key);
+      final Runnable runnable = runnables.get(key);
+      if (latch == null) {
+        throw new AssertionError("Latch not registered or already used");
+      }
+      if (runnable == null) {
+        throw new AssertionError("Runnable not registered or already used");
+      }
+
+      try {
+        latch.await(timeout, unit);
+      } catch (InterruptedException e) {
+        throw new AssertionError("latch timed out");
+      }
+      runnable.run();
+      latches.remove(key);
+      runnables.remove(key);
     }
 
-    @Override
-    public String getJobResultsTable() {
-      throw UserException.dataReadError()
-        .message(EXPECTED_MESSAGE)
-        .build();
+    /**
+     * For a given key, count down its latch
+     */
+    public static void trigger(String key) {
+      final CountDownLatch latch = latches.get(key);
+      if (latch == null) {
+        throw new AssertionError("Latch not registered or already used");
+      }
+      latch.countDown();
     }
   }
 }

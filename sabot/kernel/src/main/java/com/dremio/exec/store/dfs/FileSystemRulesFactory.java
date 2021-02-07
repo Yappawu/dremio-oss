@@ -28,16 +28,20 @@ import com.dremio.exec.ops.OptimizerRulesContext;
 import com.dremio.exec.planner.PlannerPhase;
 import com.dremio.exec.planner.logical.Rel;
 import com.dremio.exec.planner.logical.partition.PruneScanRuleBase.PruneScanRuleFilterOnProject;
+import com.dremio.exec.planner.logical.partition.PruneScanRuleBase.PruneScanRuleFilterOnSampleScan;
 import com.dremio.exec.planner.logical.partition.PruneScanRuleBase.PruneScanRuleFilterOnScan;
 import com.dremio.exec.planner.physical.DistributionTrait;
+import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.planner.physical.Prel;
 import com.dremio.exec.store.StoragePluginRulesFactory.StoragePluginTypeRulesFactory;
 import com.dremio.exec.store.TableMetadata;
 import com.dremio.exec.store.common.SourceLogicalConverter;
 import com.dremio.exec.store.dfs.easy.EasyScanPrel;
+import com.dremio.exec.store.iceberg.IcebergScanPrel;
 import com.dremio.exec.store.parquet.ParquetScanPrel;
 import com.dremio.service.namespace.DatasetHelper;
 import com.dremio.service.namespace.capabilities.SourceCapabilities;
+import com.dremio.service.namespace.file.proto.FileType;
 import com.google.common.collect.ImmutableSet;
 
 /**
@@ -53,7 +57,7 @@ public class FileSystemRulesFactory extends StoragePluginTypeRulesFactory {
 
     @Override
     public Rel convertScan(ScanCrel scan) {
-      return new FilesystemScanDrel(scan.getCluster(), scan.getTraitSet().plus(Rel.LOGICAL), scan.getTable(), scan.getPluginId(), scan.getTableMetadata(), scan.getProjectedColumns(), scan.getObservedRowcountAdjustment());
+      return new FilesystemScanDrel(scan.getCluster(), scan.getTraitSet().plus(Rel.LOGICAL), scan.getTable(), scan.getPluginId(), scan.getTableMetadata(), scan.getProjectedColumns(), scan.getObservedRowcountAdjustment(), false);
     }
   }
 
@@ -69,7 +73,7 @@ public class FileSystemRulesFactory extends StoragePluginTypeRulesFactory {
     public RelNode convert(RelNode rel) {
       FilesystemScanDrel drel = (FilesystemScanDrel) rel;
       return new ParquetScanPrel(drel.getCluster(), drel.getTraitSet().plus(Prel.PHYSICAL), drel.getTable(), drel.getPluginId(), drel.getTableMetadata(), drel.getProjectedColumns(),
-        drel.getObservedRowcountAdjustment(), drel.getFilter());
+        drel.getObservedRowcountAdjustment(), drel.getFilter(), drel.isArrowCachingEnabled());
     }
 
     @Override
@@ -96,11 +100,39 @@ public class FileSystemRulesFactory extends StoragePluginTypeRulesFactory {
     @Override
     public boolean matches(RelOptRuleCall call) {
       FilesystemScanDrel drel = (FilesystemScanDrel) call.rel(0);
-      return !isParquetDataset(drel.getTableMetadata());
+      return !isParquetDataset(drel.getTableMetadata()) && !isIcebergDataset(drel.getTableMetadata());
     }
   }
 
+  private static class IcebergFilesystemScanPrule extends ConverterRule {
+    private final SourceType pluginType;
+    private final OptimizerRulesContext context;
 
+    public IcebergFilesystemScanPrule(SourceType pluginType, OptimizerRulesContext context) {
+      super(FilesystemScanDrel.class, Rel.LOGICAL, Prel.PHYSICAL, pluginType.value() + "IcebergFilesystemScanPrule");
+      this.pluginType = pluginType;
+      this.context = context;
+    }
+
+    @Override
+    public RelNode convert(RelNode rel) {
+      if (context.getPlannerSettings().getOptions().getOption(PlannerSettings.ENABLE_ICEBERG_EXECUTION)) {
+        FilesystemScanDrel drel = (FilesystemScanDrel) rel;
+        boolean singleton = !drel.getTableMetadata().getStoragePluginId().getCapabilities().getCapability(SourceCapabilities.REQUIRES_HARD_AFFINITY) && drel.getTableMetadata().getSplitCount() == 1;
+        return new IcebergScanPrel(drel.getCluster(), drel.getTraitSet().plus(Prel.PHYSICAL).plus(singleton ? DistributionTrait.SINGLETON : DistributionTrait.ANY), drel.getTable(), drel.getPluginId(), drel.getTableMetadata(), drel.getProjectedColumns(), drel.getObservedRowcountAdjustment());
+      } else {
+        FilesystemScanDrel drel = (FilesystemScanDrel) rel;
+        return new ParquetScanPrel(drel.getCluster(), drel.getTraitSet().plus(Prel.PHYSICAL), drel.getTable(), drel.getPluginId(), drel.getTableMetadata(), drel.getProjectedColumns(),
+          drel.getObservedRowcountAdjustment(), drel.getFilter(), drel.isArrowCachingEnabled());
+      }
+    }
+
+    @Override
+    public boolean matches(RelOptRuleCall call) {
+      FilesystemScanDrel drel = (FilesystemScanDrel) call.rel(0);
+      return pluginType.equals(drel.getPluginId().getType()) && isIcebergDataset(drel.getTableMetadata());
+    }
+  }
 
   @Override
   public Set<RelOptRule> getRules(OptimizerRulesContext optimizerContext, PlannerPhase phase, SourceType pluginType) {
@@ -113,6 +145,7 @@ public class FileSystemRulesFactory extends StoragePluginTypeRulesFactory {
         if(optimizerContext.getPlannerSettings().isPartitionPruningEnabled()){
           builder.add(new PruneScanRuleFilterOnProject<>(pluginType, FilesystemScanDrel.class, optimizerContext));
           builder.add(new PruneScanRuleFilterOnScan<>(pluginType, FilesystemScanDrel.class, optimizerContext));
+          builder.add(new PruneScanRuleFilterOnSampleScan<>(pluginType, FilesystemScanDrel.class, optimizerContext));
         }
 
         return builder.build();
@@ -121,6 +154,7 @@ public class FileSystemRulesFactory extends StoragePluginTypeRulesFactory {
         return ImmutableSet.<RelOptRule>of(
             new EasyFilesystemScanPrule(pluginType),
             new ParquetFilesystemScanPrule(pluginType),
+            new IcebergFilesystemScanPrule(pluginType, optimizerContext),
             ConvertCountToDirectScan.getAggOnScan(pluginType),
             ConvertCountToDirectScan.getAggProjOnScan(pluginType)
             );
@@ -129,6 +163,10 @@ public class FileSystemRulesFactory extends StoragePluginTypeRulesFactory {
         return ImmutableSet.<RelOptRule>of();
 
     }
+  }
+
+  private static boolean isIcebergDataset(TableMetadata datasetPointer) {
+    return datasetPointer.getFormatSettings().getType() == FileType.ICEBERG;
   }
 
   private static boolean isParquetDataset(TableMetadata datasetPointer) {

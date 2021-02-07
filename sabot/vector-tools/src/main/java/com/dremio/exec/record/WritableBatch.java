@@ -19,6 +19,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.ValueVector;
 
@@ -30,7 +31,6 @@ import com.dremio.exec.record.BatchSchema.SelectionVectorMode;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 
-import io.netty.buffer.ArrowBuf;
 import io.netty.buffer.NettyArrowBuf;
 
 /**
@@ -72,8 +72,8 @@ public class WritableBatch implements AutoCloseable {
 
   public NettyArrowBuf[] getBuffers() {
     NettyArrowBuf [] nettyBuffers = new NettyArrowBuf[buffers.length];
-    return Arrays.stream(buffers).map(buf -> buf
-      .asNettyBuffer()).collect(Collectors.toList()).toArray(nettyBuffers);
+    return Arrays.stream(buffers).map(buf -> NettyArrowBuf.unwrapBuffer(buf))
+      .collect(Collectors.toList()).toArray(nettyBuffers);
   }
 
   /**

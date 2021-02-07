@@ -21,7 +21,9 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -35,23 +37,28 @@ import org.junit.Rule;
 import org.junit.Test;
 
 import com.dremio.common.AutoCloseables;
+import com.dremio.common.concurrent.CloseableThreadPool;
 import com.dremio.common.config.LogicalPlanPersistence;
 import com.dremio.common.config.SabotConfig;
 import com.dremio.config.DremioConfig;
-import com.dremio.datastore.LocalKVStoreProvider;
+import com.dremio.datastore.adapter.LegacyKVStoreProviderAdapter;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.dremio.exec.catalog.CatalogServiceImpl;
 import com.dremio.exec.catalog.ConnectionReader;
+import com.dremio.exec.catalog.MetadataRefreshInfoBroadcaster;
 import com.dremio.exec.catalog.ViewCreatorFactory;
 import com.dremio.exec.catalog.conf.Property;
-import com.dremio.exec.rpc.CloseableThreadPool;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.server.options.DefaultOptionManager;
+import com.dremio.exec.server.options.OptionManagerWrapper;
+import com.dremio.exec.server.options.OptionValidatorListingImpl;
 import com.dremio.exec.server.options.SystemOptionManager;
 import com.dremio.exec.store.CatalogService;
 import com.dremio.exec.store.dfs.FileSystemWrapper;
 import com.dremio.exec.store.dfs.InternalFileConf;
 import com.dremio.exec.store.sys.SystemTablePluginConfigProvider;
+import com.dremio.options.OptionManager;
+import com.dremio.options.OptionValidatorListing;
 import com.dremio.service.DirectProvider;
 import com.dremio.service.coordinator.ClusterCoordinator;
 import com.dremio.service.coordinator.local.LocalClusterCoordinator;
@@ -102,7 +109,7 @@ public class TestSystemStoragePluginInitializer {
     final SabotContext sabotContext = mock(SabotContext.class);
 
     storeProvider =
-      new LocalKVStoreProvider(CLASSPATH_SCAN_RESULT, null, true, false).asLegacy();
+        LegacyKVStoreProviderAdapter.inMemory(DremioTest.CLASSPATH_SCAN_RESULT);
     storeProvider.start();
 
     namespaceService = new NamespaceServiceImpl(storeProvider);
@@ -146,11 +153,16 @@ public class TestSystemStoragePluginInitializer {
     when(sabotContext.getLpPersistence())
       .thenReturn(lpp);
 
-    final DefaultOptionManager defaultOptionManager = new DefaultOptionManager(CLASSPATH_SCAN_RESULT);
-    final SystemOptionManager som = new SystemOptionManager(defaultOptionManager, lpp, () -> storeProvider, true);
+    final OptionValidatorListing optionValidatorListing = new OptionValidatorListingImpl(CLASSPATH_SCAN_RESULT);
+    final SystemOptionManager som = new SystemOptionManager(optionValidatorListing, lpp, () -> storeProvider, true);
+    OptionManager optionManager = OptionManagerWrapper.Builder.newBuilder()
+      .withOptionManager(new DefaultOptionManager(optionValidatorListing))
+      .withOptionManager(som)
+      .build();
+
     som.start();
     when(sabotContext.getOptionManager())
-      .thenReturn(som);
+      .thenReturn(optionManager);
 
     when(sabotContext.getKVStoreProvider())
       .thenReturn(storeProvider);
@@ -187,6 +199,9 @@ public class TestSystemStoragePluginInitializer {
 
     reader = ConnectionReader.of(DremioTest.CLASSPATH_SCAN_RESULT, DremioTest.DEFAULT_SABOT_CONFIG);
 
+    final MetadataRefreshInfoBroadcaster broadcaster = mock(MetadataRefreshInfoBroadcaster.class);
+    doNothing().when(broadcaster).communicateChange(any());
+
     catalogService = new CatalogServiceImpl(
       () -> sabotContext,
       () -> new LocalSchedulerService(1),
@@ -196,7 +211,8 @@ public class TestSystemStoragePluginInitializer {
       () -> allocator,
       () -> storeProvider,
       () -> datasetListingService,
-      () -> som,
+      () -> optionManager,
+      () -> broadcaster,
       dremioConfig,
       EnumSet.allOf(ClusterCoordinator.Role.class)
     );

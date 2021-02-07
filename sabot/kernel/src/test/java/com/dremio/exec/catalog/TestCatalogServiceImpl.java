@@ -21,7 +21,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -31,6 +33,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import javax.inject.Provider;
@@ -47,6 +50,8 @@ import org.junit.Rule;
 import org.junit.Test;
 
 import com.dremio.common.AutoCloseables;
+import com.dremio.common.concurrent.AutoCloseableLock;
+import com.dremio.common.concurrent.CloseableThreadPool;
 import com.dremio.common.config.LogicalPlanPersistence;
 import com.dremio.common.config.SabotConfig;
 import com.dremio.common.exceptions.UserException;
@@ -65,16 +70,20 @@ import com.dremio.connector.metadata.ListPartitionChunkOption;
 import com.dremio.connector.metadata.PartitionChunk;
 import com.dremio.connector.metadata.PartitionChunkListing;
 import com.dremio.connector.metadata.extensions.ValidateMetadataOption;
-import com.dremio.datastore.LocalKVStoreProvider;
+import com.dremio.datastore.adapter.LegacyKVStoreProviderAdapter;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.dremio.exec.catalog.conf.ConnectionConf;
 import com.dremio.exec.catalog.conf.SourceType;
+import com.dremio.exec.ops.OptimizerRulesContext;
+import com.dremio.exec.planner.PlannerPhase;
+import com.dremio.exec.planner.cost.ScanCostFactor;
 import com.dremio.exec.planner.logical.ViewTable;
 import com.dremio.exec.proto.UserBitShared;
 import com.dremio.exec.record.BatchSchema;
-import com.dremio.exec.rpc.CloseableThreadPool;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.server.options.DefaultOptionManager;
+import com.dremio.exec.server.options.OptionManagerWrapper;
+import com.dremio.exec.server.options.OptionValidatorListingImpl;
 import com.dremio.exec.server.options.SystemOptionManager;
 import com.dremio.exec.store.CatalogService;
 import com.dremio.exec.store.MissingPluginConf;
@@ -82,6 +91,8 @@ import com.dremio.exec.store.SchemaConfig;
 import com.dremio.exec.store.StoragePlugin;
 import com.dremio.exec.store.StoragePluginRulesFactory;
 import com.dremio.exec.store.sys.SystemTablePluginConfigProvider;
+import com.dremio.options.OptionManager;
+import com.dremio.options.OptionValidatorListing;
 import com.dremio.service.DirectProvider;
 import com.dremio.service.coordinator.ClusterCoordinator;
 import com.dremio.service.coordinator.local.LocalClusterCoordinator;
@@ -126,6 +137,7 @@ public class TestCatalogServiceImpl {
   private static final String MISSING_CONFIG_NAME = "MISSING_CONFIG";
 
   private static MockUpPlugin mockUpPlugin;
+  private static MockUpBadPlugin mockUpBadPlugin;
 
   private LegacyKVStoreProvider storeProvider;
   private NamespaceService namespaceService;
@@ -135,6 +147,7 @@ public class TestCatalogServiceImpl {
   private CloseableThreadPool pool;
   private FabricService fabricService;
   private NamespaceKey mockUpKey;
+  private NamespaceKey mockUpBadKey;
   private CatalogServiceImpl catalogService;
   private String originalCatalogVersion;
 
@@ -159,7 +172,7 @@ public class TestCatalogServiceImpl {
     final SabotContext sabotContext = mock(SabotContext.class);
 
     storeProvider =
-      new LocalKVStoreProvider(CLASSPATH_SCAN_RESULT, null, true, false).asLegacy();
+        LegacyKVStoreProviderAdapter.inMemory(DremioTest.CLASSPATH_SCAN_RESULT);
     storeProvider.start();
 
     namespaceService = new NamespaceServiceImpl(storeProvider);
@@ -202,12 +215,16 @@ public class TestCatalogServiceImpl {
     final LogicalPlanPersistence lpp = new LogicalPlanPersistence(sabotConfig, CLASSPATH_SCAN_RESULT);
     when(sabotContext.getLpPersistence())
         .thenReturn(lpp);
+    final OptionValidatorListing optionValidatorListing = new OptionValidatorListingImpl(CLASSPATH_SCAN_RESULT);
+    final SystemOptionManager som = new SystemOptionManager(optionValidatorListing, lpp, () -> storeProvider, true);
+    OptionManager optionManager = OptionManagerWrapper.Builder.newBuilder()
+      .withOptionManager(new DefaultOptionManager(optionValidatorListing))
+      .withOptionManager(som)
+      .build();
 
-    final DefaultOptionManager defaultOptionManager = new DefaultOptionManager(CLASSPATH_SCAN_RESULT);
-    final SystemOptionManager som = new SystemOptionManager(defaultOptionManager, lpp, () -> storeProvider, true);
     som.start();
     when(sabotContext.getOptionManager())
-        .thenReturn(som);
+        .thenReturn(optionManager);
 
     when(sabotContext.getKVStoreProvider())
         .thenReturn(storeProvider);
@@ -239,6 +256,9 @@ public class TestCatalogServiceImpl {
     fabricService = new FabricServiceImpl(HOSTNAME, 45678, true, THREAD_COUNT, allocator, RESERVATION, MAX_ALLOCATION,
         TIMEOUT, pool);
 
+    final MetadataRefreshInfoBroadcaster broadcaster = mock(MetadataRefreshInfoBroadcaster.class);
+    doNothing().when(broadcaster).communicateChange(any());
+
     catalogService = new CatalogServiceImpl(
         () -> sabotContext,
         () -> new LocalSchedulerService(1),
@@ -248,7 +268,8 @@ public class TestCatalogServiceImpl {
         () -> allocator,
         () -> storeProvider,
         () -> datasetListingService,
-        () -> som,
+        () -> optionManager,
+        () -> broadcaster,
         dremioConfig,
         EnumSet.allOf(ClusterCoordinator.Role.class)
     );
@@ -257,6 +278,9 @@ public class TestCatalogServiceImpl {
     mockUpPlugin = new MockUpPlugin();
     mockUpKey = new NamespaceKey(MOCK_UP);
 
+    mockUpBadPlugin = new MockUpBadPlugin();
+    mockUpBadKey = new NamespaceKey(MOCK_UP_BAD);
+
     final SourceConfig mockUpConfig = new SourceConfig()
         .setName(MOCK_UP)
         .setMetadataPolicy(CatalogService.NEVER_REFRESH_POLICY)
@@ -264,8 +288,16 @@ public class TestCatalogServiceImpl {
         .setConnectionConf(new MockUpConfig());
 
     doMockDatasets(mockUpPlugin, ImmutableList.of());
+
     catalogService.getSystemUserCatalog().createSource(mockUpConfig);
     originalCatalogVersion = mockUpConfig.getTag();
+
+    final SourceConfig mockUpBadConfig = new SourceConfig()
+      .setName(MOCK_UP_BAD)
+      .setMetadataPolicy(CatalogService.NEVER_REFRESH_POLICY)
+      .setCtime(100L)
+      .setConnectionConf(new MockUpBadConfig());
+    catalogService.getSystemUserCatalog().createSource(mockUpBadConfig);
   }
 
   @After
@@ -511,6 +543,30 @@ public class TestCatalogServiceImpl {
       CatalogService.REFRESH_EVERYTHING_NOW, CatalogServiceImpl.UpdateType.FULL));
   }
 
+  @Test
+  public void badSourceShouldNotBlockStorageRules() throws Exception {
+    OptimizerRulesContext mock = mock(OptimizerRulesContext.class);
+
+    ManagedStoragePlugin managedStoragePlugin = catalogService.getPlugins().get(MOCK_UP_BAD);
+    managedStoragePlugin.refreshState().get();
+
+    AtomicBoolean test = new AtomicBoolean(false);
+
+    Runnable runnable = () -> {
+      catalogService.getStorageRules(mock, PlannerPhase.RELATIONAL_PLANNING);
+      test.set(true);
+    };
+
+    Thread thread = new Thread(runnable);
+    // we get the writelock and run code in a different thread that should not use a readlock
+    try (AutoCloseableLock unused = managedStoragePlugin.writeLock()) {
+      thread.start();
+      thread.join(1000);
+    }
+    thread.interrupt();
+    assertTrue(test.get());
+  }
+
   private static abstract class DatasetImpl implements DatasetTypeHandle, DatasetMetadata, PartitionChunkListing {
   }
 
@@ -533,7 +589,7 @@ public class TestCatalogServiceImpl {
 
       @Override
       public DatasetStats getDatasetStats() {
-        return DatasetStats.of(0, 0);
+        return DatasetStats.of(0, ScanCostFactor.OTHER.getFactor());
       }
 
       @Override
@@ -598,6 +654,7 @@ public class TestCatalogServiceImpl {
   }
 
   private static final String MOCK_UP = "mockup";
+  private static final String MOCK_UP_BAD = "mockup_bad";
 
   @SourceType(value = MOCK_UP, configurable = false)
   public static class MockUpConfig extends ConnectionConf<MockUpConfig, MockUpPlugin> {
@@ -699,6 +756,116 @@ public class TestCatalogServiceImpl {
         DatasetHandle datasetHandle,
         DatasetMetadata metadata,
         ValidateMetadataOption... options
+    ) {
+      return MetadataValidity.INVALID;
+    }
+  }
+
+  @SourceType(value = MOCK_UP_BAD, configurable = false)
+  public static class MockUpBadConfig extends ConnectionConf<MockUpBadConfig, MockUpBadPlugin> {
+
+    @Override
+    public MockUpBadPlugin newPlugin(SabotContext context, String name,
+                                  Provider<StoragePluginId> pluginIdProvider) {
+      return mockUpBadPlugin;
+    }
+  }
+
+  public static class MockUpBadPlugin implements ExtendedStoragePlugin {
+    private List<DatasetHandle> datasets;
+    boolean throwAtStart = false;
+    boolean goodAtStart = true;
+
+    public void setDatasets(List<DatasetHandle> datasets) {
+      this.datasets = datasets;
+    }
+
+    @Override
+    public boolean hasAccessPermission(String user, NamespaceKey key, DatasetConfig datasetConfig) {
+      return true;
+    }
+
+    @Override
+    public SourceState getState() {
+      if (goodAtStart) {
+        goodAtStart = false;
+        return SourceState.goodState();
+      }
+      return SourceState.badState("");
+    }
+
+    @Override
+    public SourceCapabilities getSourceCapabilities() {
+      return SourceCapabilities.NONE;
+    }
+
+    @Override
+    public ViewTable getView(List<String> tableSchemaPath, SchemaConfig schemaConfig) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Class<? extends StoragePluginRulesFactory> getRulesFactoryClass() {
+      return null;
+    }
+
+    @Override
+    public void close() {
+    }
+
+    @Override
+    public void start() {
+      if (throwAtStart) {
+        throw UserException.resourceError().build(logger);
+      }
+    }
+
+    public void setThrowAtStart() {
+      throwAtStart = true;
+    }
+
+    @Override
+    public DatasetHandleListing listDatasetHandles(GetDatasetOption... options) {
+      return () -> datasets.iterator();
+    }
+
+    @Override
+    public Optional<DatasetHandle> getDatasetHandle(EntityPath datasetPath, GetDatasetOption... options) {
+      return datasets.stream()
+        .filter(dataset -> dataset.getDatasetPath().equals(datasetPath))
+        .findFirst();
+    }
+
+    @Override
+    public DatasetMetadata getDatasetMetadata(
+      DatasetHandle datasetHandle,
+      PartitionChunkListing chunkListing,
+      GetMetadataOption... options
+    ) {
+      return datasetHandle.unwrap(DatasetImpl.class);
+    }
+
+    @Override
+    public PartitionChunkListing listPartitionChunks(DatasetHandle datasetHandle, ListPartitionChunkOption... options) {
+      return datasetHandle.unwrap(DatasetImpl.class);
+    }
+
+    @Override
+    public boolean containerExists(EntityPath containerPath) {
+      return false;
+    }
+
+    @Override
+    public BytesOutput provideSignature(DatasetHandle datasetHandle, DatasetMetadata metadata) {
+      return BytesOutput.NONE;
+    }
+
+    @Override
+    public MetadataValidity validateMetadata(
+      BytesOutput signature,
+      DatasetHandle datasetHandle,
+      DatasetMetadata metadata,
+      ValidateMetadataOption... options
     ) {
       return MetadataValidity.INVALID;
     }

@@ -18,12 +18,20 @@ package com.dremio.sabot.op.scan;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import java.io.FileNotFoundException;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Iterator;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.OutOfMemoryException;
+import org.apache.arrow.util.Preconditions;
+import org.apache.arrow.util.VisibleForTesting;
 import org.apache.arrow.vector.AllocationHelper;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -33,49 +41,62 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.dremio.common.AutoCloseables;
-import com.dremio.common.AutoCloseables.RollbackCloseable;
 import com.dremio.common.exceptions.ErrorHelper;
 import com.dremio.common.exceptions.InvalidMetadataErrorContext;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.expression.SchemaPath;
+import com.dremio.common.serde.ProtobufByteStringSerDe;
+import com.dremio.common.utils.protos.QueryIdHelper;
+import com.dremio.exec.ExecConstants;
 import com.dremio.exec.exception.SchemaChangeException;
 import com.dremio.exec.exception.SchemaChangeExceptionContext;
 import com.dremio.exec.expr.TypeHelper;
+import com.dremio.exec.physical.base.OpProps;
 import com.dremio.exec.physical.base.SubScan;
+import com.dremio.exec.physical.config.BoostPOP;
+import com.dremio.exec.physical.config.Screen;
+import com.dremio.exec.planner.fragment.PlanFragmentFull;
+import com.dremio.exec.proto.CoordExecRPC;
+import com.dremio.exec.proto.CoordinationProtos;
+import com.dremio.exec.proto.ExecProtos;
 import com.dremio.exec.proto.UserBitShared;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.record.BatchSchema.SelectionVectorMode;
 import com.dremio.exec.record.VectorAccessible;
 import com.dremio.exec.record.VectorContainer;
 import com.dremio.exec.store.RecordReader;
+import com.dremio.exec.store.RuntimeFilter;
 import com.dremio.exec.store.parquet.GlobalDictionaries;
+import com.dremio.exec.store.parquet.ParquetSubScan;
+import com.dremio.exec.store.parquet.RecordReaderIterator;
 import com.dremio.exec.testing.ControlsInjector;
 import com.dremio.exec.testing.ControlsInjectorFactory;
 import com.dremio.exec.util.VectorUtil;
+import com.dremio.exec.work.foreman.ForemanSetupException;
 import com.dremio.sabot.exec.context.MetricDef;
 import com.dremio.sabot.exec.context.OperatorContext;
 import com.dremio.sabot.exec.context.OperatorStats;
+import com.dremio.sabot.exec.fragment.OutOfBandMessage;
 import com.dremio.sabot.op.spi.ProducerOperator;
 import com.dremio.sabot.op.values.EmptyValuesCreator.EmptyRecordReader;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.common.base.Function;
 import com.google.common.base.Functions;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
-
-import io.netty.buffer.ArrowBuf;
+import com.google.protobuf.ByteString;
 
 /**
  * Record batch used for a particular scan. Operators against one or more
  */
 public class ScanOperator implements ProducerOperator {
   private static final Logger logger = LoggerFactory.getLogger(ScanOperator.class);
-  private static final ControlsInjector injector = ControlsInjectorFactory.getInjector(ScanOperator.class);
+  protected static final ControlsInjector injector = ControlsInjectorFactory.getInjector(ScanOperator.class);
 
   /** Main collection of fields' value vectors. */
-  private final VectorContainer outgoing;
+  protected final VectorContainer outgoing;
 
   public enum Metric implements MetricDef {
     @Deprecated
@@ -85,8 +106,8 @@ public class ScanOperator implements ProducerOperator {
     NUM_ROW_GROUPS, // number of rowGroups for the FileSplitParquetRecordReader
     NUM_VECTORIZED_COLUMNS,
     NUM_NON_VECTORIZED_COLUMNS,
-    COPY_MS,
-    FILTER_MS,
+    COPY_NS,
+    FILTER_NS,
     PARQUET_EXEC_PATH, // type of readers (vectorized, non-vectorized or combination used) in parquet
     FILTER_EXISTS, // Is there a filter pushed into scan?
     PARQUET_BYTES_READ, // Represents total number of actual bytes (uncompressed) read while parquet scan.
@@ -101,24 +122,46 @@ public class ScanOperator implements ProducerOperator {
     PRELOADED_BYTES,           // Number of bytes pre-loaded
     NUM_CACHE_HITS,       // Number of C3 hits
     NUM_CACHE_MISSES,     // Number of C3 misses
-    AVG_PROCESSING_TIME,   // Average processing time of request by C3
-    JAVA_BUILD_TIME,   // time taken by Java (setup+evaluation) for type conversions in CoercionReader
-    JAVA_EXECUTE_TIME,
-    GANDIVA_BUILD_TIME, // time taken by Gandiva (setup+evaluation) for type conversions in CoercionReader,
-    GANDIVA_EXECUTE_TIME,
+    AVG_PROCESSING_TIME_NS,   // Average processing time of request by C3
+    JAVA_BUILD_TIME_NS,   // time taken by Java (setup+evaluation) for type conversions in CoercionReader
+    JAVA_EXECUTE_TIME_NS,
+    GANDIVA_BUILD_TIME_NS, // time taken by Gandiva (setup+evaluation) for type conversions in CoercionReader
+    GANDIVA_EXECUTE_TIME_NS,
     NUM_FILTERS_MODIFIED,   // Number of parquet filters modified
     NUM_HIVE_PARQUET_TRUNCATE_VARCHAR, // Number of fixed-len varchar fields in hive_parquet
     TOTAL_HIVE_PARQUET_TRUNCATE_VARCHAR, // Total number of fixed-len varchar truncation in haveParquetCoercion
     TOTAL_HIVE_PARQUET_TRANSFER_VARCHAR, //  Total number of fixed-len varchar transfers in haveParquetCoercion
-    HIVE_PARQUET_CHECK_VARCHAR_CAST_TIME, // Time spent checking if truncation is required for a varchar field
+    HIVE_PARQUET_CHECK_VARCHAR_CAST_TIME_NS, // Time spent checking if truncation is required for a varchar field
     NUM_ROW_GROUPS_PRUNED, // number of rowGroups pruned in ParquetVectorizedReader
     MAX_ROW_GROUPS_IN_HIVE_FILE_SPLITS, // max number of row groups across hive file splits
     NUM_HIVE_FILE_SPLITS_WITH_NO_ROWGROUPS, // Number of hive file splits with no rowgroups
-    MIN_IO_READ_TIME,   // Minimum IO read time
-    MAX_IO_READ_TIME,   // Maximum IO read time
-    AVG_IO_READ_TIME,   // Average IO read time
+    MIN_IO_READ_TIME_NS,   // Minimum IO read time
+    MAX_IO_READ_TIME_NS,   // Maximum IO read time
+    AVG_IO_READ_TIME_NS,   // Average IO read time
     NUM_IO_READ,        // Total Number of IO reads
     NUM_HIVE_PARQUET_DECIMAL_COERCIONS, // Number of decimal coercions in hive parquet
+    NUM_ROW_GROUPS_TRIMMED, // Number of row groups trimmed from footer in memory
+    NUM_COLUMNS_TRIMMED,    // Number of columns trimmed from footer in memory
+    NUM_PARTITIONS_PRUNED, // Number of partitions pruned from runtime filter
+    NUM_BOOSTED_FILE_READS, // Number of Boosted File Reads.
+    MAX_BOOSTED_FILE_READ_TIME_NS, // Max Boosted IO read Time.
+    AVG_BOOSTED_FILE_READ_TIME_NS, // Average Boosted IO time.
+    TOTAL_BOOSTED_BYTES_READ, // Total Boosted Bytes Read.
+    NUM_COLUMNS_BOOSTED, // Number of Boosted Files Read.
+    OFFSET_INDEX_READ, // Offset Index Read,
+    COLUMN_INDEX_READ, // Column Index Read.
+    NUM_BOOSTED_RECORD_BATCHES_PRUNED, //Due to Filter how many record batches have been skipped
+    NUM_PAGES_PRUNED, // Number of pages skipped based on stats
+    NUM_PAGES_READ, // Number of pages checked upon
+    PAGE_DECOMPRESSION_TIME_NS, // Total time taken for page decompression in nanos
+    NUM_RUNTIME_FILTERS, // Number of runtime filter received at scan
+    RUNTIME_COL_FILTER_DROP_COUNT, // Number of non partition column filters dropped due to schema incompatibility
+    ROW_GROUPS_SCANNED_WITH_RUNTIME_FILTER, // Number of rowgroups scanned with runtime filter
+    PAGE_DECODING_TIME_NS, // Total Time take for decoding the pages during vectorized column reading
+    MIN_METADATA_IO_READ_TIME_NS,  // Minimum IO read time for metadata operations
+    MAX_METADATA_IO_READ_TIME_NS,   // Maximum IO read time for metadata operations
+    AVG_METADATA_IO_READ_TIME_NS,  // Average IO read time for metadata operations
+    NUM_METADATA_IO_READ
     ;
 
     @Override
@@ -128,28 +171,40 @@ public class ScanOperator implements ProducerOperator {
   }
 
   /** Fields' value vectors indexed by fields' keys. */
-  private final Map<String, ValueVector> fieldVectorMap = Maps.newHashMap();
-  private State state = State.NEEDS_SETUP;
-  private final OperatorContext context;
-  private Iterator<RecordReader> readers;
-  private RecordReader currentReader;
+  protected final Map<String, ValueVector> fieldVectorMap = Maps.newHashMap();
+  protected State state = State.NEEDS_SETUP;
+  protected final OperatorContext context;
+  protected RecordReaderIterator readers;
+  protected RecordReader currentReader;
   private final ScanMutator mutator;
   private MutatorSchemaChangeCallBack callBack = new MutatorSchemaChangeCallBack();
   private final BatchSchema schema;
   private final ImmutableList<SchemaPath> selectedColumns;
   private final List<String> tableSchemaPath;
-  private final SubScan config;
+  protected final SubScan config;
   private final GlobalDictionaries globalDictionaries;
+  // maps peerJoin -> number of fragments that will send a runtime filter. This is initialized as part of creating the ScanOperator
+  private final HashMap<Long, Integer> peerJoinFragmentMap = new HashMap<>();
+  // maps peerJoin -> the filter to apply
+  private final HashMap<Long, Object> peerJoinFilterMap = new HashMap<>();
   private final Stopwatch readTime = Stopwatch.createUnstarted();
 
-  public ScanOperator(SubScan config, OperatorContext context, Iterator<RecordReader> readers) {
-    this(config, context, readers, null);
+  private final Set<SchemaPath> columnsToBoost;
+
+  private final CoordinationProtos.NodeEndpoint foremanEndpoint;
+  private final CoordExecRPC.QueryContextInformation queryContextInfo;
+
+  private List<RuntimeFilter> runtimeFilters = new ArrayList<>();
+
+  public ScanOperator(SubScan config, OperatorContext context, RecordReaderIterator readers) {
+    this(config, context, readers, null, null, null);
   }
 
   public ScanOperator(SubScan config, OperatorContext context,
-                      Iterator<RecordReader> readers, GlobalDictionaries globalDictionaries) {
+                      RecordReaderIterator readers, GlobalDictionaries globalDictionaries, CoordinationProtos.NodeEndpoint foremanEndpoint,
+                      CoordExecRPC.QueryContextInformation queryContextInformation) {
     if (!readers.hasNext()) {
-      this.readers = ImmutableList.<RecordReader>of(new EmptyRecordReader(context)).iterator();
+      this.readers = RecordReaderIterator.from(new EmptyRecordReader(context));
     } else {
       this.readers = readers;
     }
@@ -162,6 +217,7 @@ public class ScanOperator implements ProducerOperator {
     // change happens there, it gets corrected in the Foreman (when an InvalidMetadataError is thrown).
     this.tableSchemaPath = Iterables.getFirst(config.getReferencedTables(), null);
     this.selectedColumns = config.getColumns() == null ? null : ImmutableList.copyOf(config.getColumns());
+    this.columnsToBoost = new HashSet<>();
 
     final OperatorStats stats = context.getStats();
     try {
@@ -180,6 +236,9 @@ public class ScanOperator implements ProducerOperator {
     this.mutator = new ScanMutator(outgoing, fieldVectorMap, context, callBack);
 
     context.getStats().addLongStat(Metric.NUM_READERS, 1);
+
+    this.foremanEndpoint = foremanEndpoint;
+    this.queryContextInfo = queryContextInformation;
   }
 
   @Override
@@ -198,13 +257,13 @@ public class ScanOperator implements ProducerOperator {
     return state;
   }
 
-  private void setupReader(RecordReader reader) throws Exception {
-    try(RollbackCloseable commit = AutoCloseables.rollbackable(reader)){
+  protected void setupReader(RecordReader reader) throws Exception {
+    try {
       BatchSchema initialSchema = outgoing.getSchema();
+      runtimeFilters.stream().forEach(reader::addRuntimeFilter);
       setupReaderAsCorrectUser(reader);
       checkAndLearnSchema();
       Preconditions.checkArgument(initialSchema.equals(outgoing.getSchema()), "Schema changed but not detected.");
-      commit.commit();
     } catch (Exception e) {
       if (ErrorHelper.findWrappedCause(e, FileNotFoundException.class) != null) {
         if (e instanceof UserException) {
@@ -248,6 +307,12 @@ public class ScanOperator implements ProducerOperator {
     while ((recordCount = currentReader.next()) == 0) {
 
       readTime.stop();
+
+      // currentReader is done; get columnsToBoost
+      if (currentReader.getColumnsToBoost() != null) {
+        columnsToBoost.addAll(currentReader.getColumnsToBoost());
+      }
+
       readTime.reset();
       readTime.start();
       if (!readers.hasNext()) {
@@ -283,12 +348,52 @@ public class ScanOperator implements ProducerOperator {
     return outgoing.setAllCount(recordCount);
   }
 
-  private void checkAndLearnSchema(){
+  @Override
+  public void workOnOOB(OutOfBandMessage message) {
+    final String senderInfo = String.format("Frag %d:%d, OpId %d", message.getSendingMajorFragmentId(),
+            message.getSendingMinorFragmentId(), message.getSendingOperatorId());
+    if (message.getBuffers()==null || message.getBuffers().length!=1) {
+      logger.warn("Empty runtime filter received from {}", senderInfo);
+      return;
+    }
+    ArrowBuf msgBuf = message.getIfSingleBuffer().get();
+
+    logger.info("Filter received from {}", senderInfo);
+    try {
+      // scan operator handles the OOB message that it gets from the join operator
+      final ExecProtos.RuntimeFilter protoFilter = message.getPayload(ExecProtos.RuntimeFilter.parser());
+      final RuntimeFilter filter = RuntimeFilter.getInstance(protoFilter, msgBuf, senderInfo, context.getStats());
+
+      boolean isAlreadyPresent = this.runtimeFilters.stream().anyMatch(r -> r.isOnSameColumns(filter));
+      if (isAlreadyPresent) {
+        logger.debug("Skipping enforcement because filter is already present {}", filter);
+        AutoCloseables.close(filter);
+      } else {
+        logger.debug("Adding filter to the record readers {}, current reader {}.", filter, this.currentReader.getClass().getName());
+        this.runtimeFilters.add(filter);
+        this.currentReader.addRuntimeFilter(filter);
+        this.readers.addRuntimeFilter(filter);
+        context.getStats().addLongStat(Metric.NUM_RUNTIME_FILTERS, 1);
+      }
+    } catch (Exception e) {
+      logger.warn("Error while merging runtime filter piece from " + message.getSendingMajorFragmentId() + ":"
+              + message.getSendingMinorFragmentId(), e);
+    }
+  }
+
+  @VisibleForTesting
+  List<RuntimeFilter> getRuntimeFilters() {
+    return runtimeFilters;
+  }
+
+  protected void checkAndLearnSchema(){
     if (mutator.getSchemaChanged()) {
       outgoing.buildSchema(SelectionVectorMode.NONE);
       final BatchSchema newSchema = mutator.transformFunction.apply(outgoing.getSchema());
       if (config.mayLearnSchema() && tableSchemaPath != null) {
         throw UserException.schemaChangeError()
+            .addContext("Original Schema", config.getFullSchema().toString())
+            .addContext("New Schema", newSchema.toString())
             .message("New schema found. Please reattempt the query. Multiple attempts may be necessary to fully learn the schema.")
             .setAdditionalExceptionContext(new SchemaChangeExceptionContext(tableSchemaPath, newSchema))
             .build(logger);
@@ -317,6 +422,16 @@ public class ScanOperator implements ProducerOperator {
       this.fieldVectorMap = fieldVectorMap;
       this.context = context;
       this.callBack = callBack;
+    }
+
+    public void removeField(Field field) throws SchemaChangeException {
+      ValueVector vector = fieldVectorMap.remove(field.getName().toLowerCase());
+      if (vector == null) {
+        throw new SchemaChangeException("Failure attempting to remove an unknown field.");
+      }
+      try (ValueVector v = vector) {
+        outgoing.remove(vector);
+      }
     }
 
     @Override
@@ -401,22 +516,134 @@ public class ScanOperator implements ProducerOperator {
 
   @Override
   public void close() throws Exception {
-    AutoCloseables.close(outgoing, currentReader, globalDictionaries, readers instanceof AutoCloseable ? (AutoCloseable) readers : null);
+    final List<AutoCloseable> closeables = new ArrayList<>(runtimeFilters.size() + 4);
+    closeables.add(outgoing);
+    closeables.add(currentReader);
+    closeables.add(globalDictionaries);
+    closeables.add(readers);
+    closeables.addAll(runtimeFilters);
+    AutoCloseables.close(closeables);
     OperatorStats operatorStats = context.getStats();
     OperatorStats.IOStats ioStats = operatorStats.getReadIOStats();
+    OperatorStats.IOStats ioStatsMetadata = operatorStats.getMetadataReadIOStats();
+
+    UserBitShared.OperatorProfileDetails.Builder profileDetailsBuilder = UserBitShared.OperatorProfileDetails.newBuilder();
+
 
     if (ioStats != null) {
       long minIOReadTime = ioStats.minIOTime.longValue() <= ioStats.maxIOTime.longValue() ? ioStats.minIOTime.longValue() : 0;
-      operatorStats.setLongStat(Metric.MIN_IO_READ_TIME, minIOReadTime);
-      operatorStats.setLongStat(Metric.MAX_IO_READ_TIME, ioStats.maxIOTime.longValue());
-      operatorStats.setLongStat(Metric.AVG_IO_READ_TIME, ioStats.numIO.get() == 0 ? 0 : ioStats.totalIOTime.longValue() / ioStats.numIO.get());
+      operatorStats.setLongStat(Metric.MIN_IO_READ_TIME_NS, minIOReadTime);
+      operatorStats.setLongStat(Metric.MAX_IO_READ_TIME_NS, ioStats.maxIOTime.longValue());
+      operatorStats.setLongStat(Metric.AVG_IO_READ_TIME_NS, ioStats.numIO.get() == 0 ? 0 : ioStats.totalIOTime.longValue() / ioStats.numIO.get());
       operatorStats.addLongStat(Metric.NUM_IO_READ, ioStats.numIO.longValue());
-
-      operatorStats.setProfileDetails(UserBitShared.OperatorProfileDetails
-        .newBuilder()
-        .addAllSlowIoInfos(ioStats.slowIOInfoList)
-        .build());
+      profileDetailsBuilder.addAllSlowIoInfos(ioStats.slowIOInfoList);
     }
+
+    if(ioStatsMetadata != null) {
+      long minMetadataIOReadTime = ioStatsMetadata.minIOTime.longValue() <= ioStatsMetadata.maxIOTime.longValue() ? ioStatsMetadata.minIOTime.longValue() : 0;
+      operatorStats.addLongStat(Metric.MIN_METADATA_IO_READ_TIME_NS, minMetadataIOReadTime);
+      operatorStats.addLongStat(Metric.MAX_METADATA_IO_READ_TIME_NS, ioStatsMetadata.maxIOTime.longValue());
+      operatorStats.addLongStat(Metric.AVG_METADATA_IO_READ_TIME_NS, ioStatsMetadata.numIO.get() == 0 ? 0 : ioStatsMetadata.totalIOTime.longValue() / ioStatsMetadata.numIO.get());
+      operatorStats.addLongStat(Metric.NUM_METADATA_IO_READ, ioStatsMetadata.numIO.longValue());
+      profileDetailsBuilder.addAllSlowMetadataIoInfos(ioStatsMetadata.slowIOInfoList);
+    }
+
+    operatorStats.setProfileDetails(profileDetailsBuilder.build());
+
+    onScanDone();
+  }
+
+  protected void onScanDone() {
+    if (!context.getOptions().getOption(ExecConstants.ENABLE_BOOSTING)) {
+      logger.debug("Not starting boost fragment since support option is disabled");
+      return;
+    }
+
+    if (!(config instanceof ParquetSubScan)) {
+      logger.debug("Not starting boost fragment since scan is not parquet-scan");
+      return;
+    }
+
+    if (!((ParquetSubScan) config).isArrowCachingEnabled()) {
+      logger.debug("Not starting boost fragment since boost flag is disabled in scan config");
+      return;
+    }
+
+    if (columnsToBoost.isEmpty()) {
+      logger.debug("Not starting boost fragment since columnsToBoost is empty");
+      return;
+    }
+
+    try {
+      createAndExecuteBoostFragment();
+    } catch (Exception e) {
+      logger.error("Failure while executing boost fragment.", e);
+    }
+  }
+
+  private void createAndExecuteBoostFragment() throws ForemanSetupException {
+    BoostPOP boost = config.getBoostConfig(new ArrayList<>(columnsToBoost));
+
+    Screen root = new Screen(
+      OpProps.prototype(boost.getProps().getOperatorId() + 1, 1_000_000, Long.MAX_VALUE),
+      boost,
+      true); // screen operator should not send any messages to coord
+
+    UserBitShared.QueryId queryId = context.getQueryIdForLocalQuery();
+
+    int minorFragmentId = 0;
+    int majorFragmentId = 0;
+    ExecProtos.FragmentHandle handle =
+      ExecProtos.FragmentHandle
+        .newBuilder()
+        .setMajorFragmentId(majorFragmentId)
+        .setMinorFragmentId(minorFragmentId)
+        .setQueryId(queryId)
+        .build();
+
+    // get plan as JSON
+    ByteString plan;
+    ByteString optionsData;
+    try {
+      plan = ProtobufByteStringSerDe.writeValue(context.getLpPersistence().getMapper(), root, ProtobufByteStringSerDe.Codec.NONE);
+      optionsData = ProtobufByteStringSerDe.writeValue(context.getLpPersistence().getMapper(), context.getOptions().getNonDefaultOptions(), ProtobufByteStringSerDe.Codec.NONE);
+    } catch (JsonProcessingException e) {
+      throw new ForemanSetupException("Failure while trying to convert fragment into json.", e);
+    }
+
+    CoordExecRPC.PlanFragmentMajor major =
+      CoordExecRPC.PlanFragmentMajor.newBuilder()
+        .setForeman(foremanEndpoint) // get foreman from Scan
+        .setFragmentJson(plan)
+        .setHandle(handle.toBuilder().clearMinorFragmentId().build())
+        .setLeafFragment(true)
+        .setContext(queryContextInfo)
+        .setMemInitial(root.getProps().getMemReserve() + boost.getProps().getMemReserve())
+        .setOptionsJson(optionsData)
+        .setCredentials(UserBitShared.UserCredentials
+          .newBuilder()
+          .setUserName(config.getProps().getUserName())
+          .build())
+        .setPriority(CoordExecRPC.FragmentPriority.newBuilder().setWorkloadClass(UserBitShared.WorkloadClass.BACKGROUND).build())
+        .setFragmentCodec(CoordExecRPC.FragmentCodec.NONE)
+        .addAllAllAssignment(Collections.emptyList())
+        .build();
+
+    // minor with empty assignment, collector, attrs
+    CoordExecRPC.PlanFragmentMinor minor = CoordExecRPC.PlanFragmentMinor.newBuilder()
+      .setMajorFragmentId(majorFragmentId)
+      .setMinorFragmentId(minorFragmentId)
+      .setAssignment(CoordinationProtos.NodeEndpoint.newBuilder().build())
+      .setMemMax(queryContextInfo.getQueryMaxAllocation())
+      .addAllCollector(Collections.emptyList())
+      .addAllAttrs(Collections.emptyList())
+      .build();
+
+    logger.debug("Starting boost fragment with queryID: {} to boost columns {} of table [{}]",
+      QueryIdHelper.getQueryId(queryId), boost.getColumns(),
+      config.getReferencedTables().stream().flatMap(Collection::stream).collect(Collectors.joining(".")));
+
+    context.startFragmentOnLocal(new PlanFragmentFull(major, minor));
   }
 
 }

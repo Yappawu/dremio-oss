@@ -33,6 +33,7 @@ import com.dremio.exec.exception.ClassTransformationException;
 import com.dremio.exec.expr.ClassGenerator;
 import com.dremio.exec.expr.CodeGenerator;
 import com.dremio.exec.server.options.SessionOptionManagerImpl;
+import com.dremio.options.OptionManager;
 import com.dremio.options.OptionValue;
 import com.dremio.options.OptionValue.OptionType;
 import com.dremio.sabot.exec.context.CompilationOptions;
@@ -44,14 +45,16 @@ public class TestClassTransformation extends BaseTestQuery {
 
   private static final int ITERATION_COUNT = Integer.valueOf(System.getProperty("TestClassTransformation.iteration", "1"));
 
-  private static SessionOptionManagerImpl sessionOptions;
+  private static OptionManager sessionOptions;
 
   @BeforeClass
   public static void beforeTestClassTransformation() throws Exception {
     final UserSession userSession = UserSession.Builder.newBuilder()
-      .withSessionOptionManager(new SessionOptionManagerImpl(getSabotContext().getOptionManager()))
+      .withSessionOptionManager(
+        new SessionOptionManagerImpl(getSabotContext().getOptionValidatorListing()),
+        getSabotContext().getOptionManager())
       .build();
-    sessionOptions = (SessionOptionManagerImpl) userSession.getOptions();
+    sessionOptions = userSession.getOptions();
   }
 
   @Test
@@ -82,7 +85,8 @@ public class TestClassTransformation extends BaseTestQuery {
   public void testCompilationNoDebug() throws CompileException, ClassNotFoundException, ClassTransformationException, IOException {
     CodeGenerator<ExampleInner> cg = newCodeGenerator(ExampleInner.class, ExampleTemplateWithInner.class);
     ClassSet classSet = new ClassSet(null, cg.getDefinition().getTemplateClassName(), cg.getMaterializedClassName());
-    String sourceCode = cg.generateAndGet();
+    cg.generate();
+    String sourceCode = cg.getGeneratedCode();
     sessionOptions.setOption(OptionValue.createString(OptionType.SESSION, ClassCompilerSelector.JAVA_COMPILER_OPTION, ClassCompilerSelector.CompilerPolicy.JDK.name()));
 
     sessionOptions.setOption(OptionValue.createBoolean(OptionType.SESSION, ClassCompilerSelector.JAVA_COMPILER_DEBUG_OPTION, false));
@@ -117,7 +121,8 @@ public class TestClassTransformation extends BaseTestQuery {
     CodeGenerator<ExampleInner> cg = newCodeGenerator(ExampleInner.class, ExampleTemplateWithInner.class);
 
     ClassTransformer ct = new ClassTransformer(sessionOptions);
-    Class<? extends ExampleInner> c = (Class<? extends ExampleInner>) ct.getImplementationClass(loader, cg.getDefinition(), cg.generateAndGet(), cg.getMaterializedClassName());
+    cg.generate();
+    Class<? extends ExampleInner> c = (Class<? extends ExampleInner>) ct.getImplementationClass(loader, cg.getDefinition(), cg.getGeneratedCode(), cg.getMaterializedClassName());
     ExampleInner t = c.newInstance();
     t.doOutside();
     t.doInsideOutside();

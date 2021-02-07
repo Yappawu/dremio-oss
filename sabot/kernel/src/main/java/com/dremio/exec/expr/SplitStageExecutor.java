@@ -63,7 +63,7 @@ class SplitStageExecutor implements AutoCloseable {
   final NativeProjectorBuilder nativeProjectorBuilder;
 
   // Class generator for Java classes
-  final ClassGenerator<Projector> cg;
+  ClassGenerator<Projector> cg;
 
   // All java splits that are to be evaluated
   final List<ExpressionSplit> javaSplits = Lists.newArrayList();
@@ -149,7 +149,7 @@ class SplitStageExecutor implements AutoCloseable {
 
     if (gandivaCodeGen) {
       logger.trace("Setting up split for {} in Gandiva", split.toString());
-      nativeProjectorBuilder.add(expr, vector);
+      nativeProjectorBuilder.add(expr, vector, split.getOptimize());
       return outputField;
     }
 
@@ -180,6 +180,9 @@ class SplitStageExecutor implements AutoCloseable {
 
     javaCodeGenWatch.start();
     javaProjector = cg.getCodeGenerator().getImplementationClass();
+    // CodeGenerator is no longer required since the code has been generated
+    // Releasing heap memory
+    cg = null;
     javaProjector.setup(
       context.getFunctionContext(),
       incoming,
@@ -238,7 +241,8 @@ class SplitStageExecutor implements AutoCloseable {
     if (finalSplit.getExecutionEngine() == SupportedEngines.Engine.GANDIVA) {
       logger.trace("Setting up filter for split in Gandiva {}", finalSplit.toString());
       gandivaCodeGenWatch.start();
-      nativeFilter = NativeFilter.build(finalSplit.getNamedExpression().getExpr(), incoming, outgoing.getSelectionVector2(), context.getFunctionContext());
+      nativeFilter = NativeFilter.build(finalSplit.getNamedExpression().getExpr(), incoming, outgoing.getSelectionVector2(),
+        context.getFunctionContext(), finalSplit.getOptimize());
       gandivaCodeGenWatch.stop();
       this.filterFunction = new NativeTimedFilter(nativeFilter);
       return;

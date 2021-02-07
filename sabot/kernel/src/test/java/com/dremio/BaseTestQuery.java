@@ -23,9 +23,11 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.UncheckedIOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URL;
 import java.nio.file.DirectoryStream;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -34,6 +36,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.VarCharVector;
@@ -584,6 +587,28 @@ public class BaseTestQuery extends ExecTest {
     return Resources.toString(url, Charsets.UTF_8);
   }
 
+  public void writeDir(java.nio.file.Path baseDir, java.nio.file.Path dest, String srcDirName) {
+    URL resource = Resources.getResource(baseDir.resolve(srcDirName).toString());
+    try (Stream<java.nio.file.Path> fileStream = java.nio.file.Files.walk(Paths.get(resource.getPath()))) {
+      fileStream.forEach(inputFile -> {
+        if (!java.nio.file.Files.isDirectory(inputFile)) {
+          writeFile(baseDir, dest, inputFile.getFileName());
+        }
+      });
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  public void writeFile(java.nio.file.Path baseDir, java.nio.file.Path dest, java.nio.file.Path srcFileName) {
+    URL resource = Resources.getResource(baseDir.resolve(dest.getFileName()).resolve(srcFileName).toString());
+    try {
+      java.nio.file.Files.write(dest.resolve(srcFileName), Resources.toByteArray(resource));
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
   /**
    * Copy the resource (ex. file on classpath) to a physical file on FileSystem.
    * @param resource
@@ -601,15 +626,30 @@ public class BaseTestQuery extends ExecTest {
   }
 
   /**
-   * Create a temp directory to store the given <i>dirName</i>
+   * Create a temp parent directory to store the given directory with name {@code dirName}. Does <b>NOT</b> create
+   * the directory itself.
+   *
    * @param dirName
    * @return Full path including temp parent directory and given directory name.
    */
   public static String getTempDir(final String dirName) {
     final File dir = Files.createTempDir();
     dir.deleteOnExit();
-
     return dir.getAbsolutePath() + File.separator + dirName;
+  }
+
+  /**
+   * Create a temp directory with name {@code dirName}.
+   *
+   * @param dirName
+   * @return Full path including temp parent directory and given directory name.
+   */
+  public static File createTempDirWithName(String dirName) {
+    final File dir = Files.createTempDir();
+    File file = new File(dir, dirName);
+    file.mkdirs();
+    file.deleteOnExit();
+    return file;
   }
 
   protected static void resetSessionOption(final OptionValidator option) {
@@ -654,6 +694,15 @@ public class BaseTestQuery extends ExecTest {
     }
   }
 
+  protected static void resetSystemOption(final String option) {
+    String str = String.format("alter system reset %1$s%2$s%1$s", SqlUtils.QUOTE, option);
+    try {
+      runSQL(str);
+    } catch(final Exception e) {
+      fail(String.format("Failed to run %s, Error: %s", str, e.toString()));
+    }
+  }
+
   protected static AutoCloseable enableHiveAsync() {
     setSystemOption(ExecConstants.ENABLE_HIVE_ASYNC, "true");
     return () ->
@@ -666,6 +715,34 @@ public class BaseTestQuery extends ExecTest {
     return () ->
       setSystemOption(ExecConstants.ENABLE_ICEBERG,
         ExecConstants.ENABLE_ICEBERG.getDefault().getBoolVal().toString());
+  }
+
+  protected static AutoCloseable disableExchanges() {
+    setSystemOption(PlannerSettings.EXCHANGE, "true");
+    return () ->
+      setSystemOption(PlannerSettings.EXCHANGE,
+        PlannerSettings.EXCHANGE.getDefault().getBoolVal().toString());
+  }
+
+  protected static AutoCloseable enableINPushDown() {
+    setSystemOption(PlannerSettings.ENABLE_PARQUET_IN_EXPRESSION_PUSH_DOWN, "true");
+    return () ->
+      setSystemOption(PlannerSettings.ENABLE_PARQUET_IN_EXPRESSION_PUSH_DOWN,
+        PlannerSettings.ENABLE_PARQUET_IN_EXPRESSION_PUSH_DOWN.getDefault().getBoolVal().toString());
+  }
+
+  protected static AutoCloseable enableMultipleConditionPushDown() {
+    setSystemOption(PlannerSettings.ENABLE_PARQUET_MULTI_COLUMN_FILTER_PUSH_DOWN, "true");
+    return () ->
+      setSystemOption(PlannerSettings.ENABLE_PARQUET_MULTI_COLUMN_FILTER_PUSH_DOWN,
+        PlannerSettings.ENABLE_PARQUET_MULTI_COLUMN_FILTER_PUSH_DOWN.getDefault().getBoolVal().toString());
+  }
+
+  protected static AutoCloseable treatScanAsBoost() {
+    setSystemOption(ExecConstants.ENABLE_BOOSTING, "true");
+    return () ->
+            setSystemOption(ExecConstants.ENABLE_BOOSTING,
+                    ExecConstants.ENABLE_BOOSTING.getDefault().getBoolVal().toString());
   }
 
   private static AutoCloseable setHiveParquetComplexTypes(String value) {
@@ -690,6 +767,12 @@ public class BaseTestQuery extends ExecTest {
     runSQL(setOptionQuery);
     return () ->
       runSQL(unSetOptionQuery);
+  }
+
+  protected static AutoCloseable setSystemOptionWithAutoReset(final String option, final String value ) {
+    setSystemOption(option, value);
+    return () ->
+      resetSystemOption(option);
   }
 
   protected static AutoCloseable disableParquetVectorization() {
@@ -726,6 +809,31 @@ public class BaseTestQuery extends ExecTest {
     public void queryIdArrived(QueryId queryId) {}
 
   }
+
+  // captures queryId and state.
+  public static class QueryIdCapturingListener extends SilentListener {
+    private QueryId queryId;
+    private QueryState queryState;
+
+    @Override
+    public void queryIdArrived(QueryId queryId) {
+      this.queryId = queryId;
+    }
+
+    @Override
+    public void queryCompleted(QueryState queryState) {
+      this.queryState = queryState;
+    }
+
+    public QueryId getQueryId() {
+      return queryId;
+    }
+
+    public QueryState getQueryState() {
+      return queryState;
+    }
+  }
+
 
   public static int getRecordCount(List<QueryDataBatch> result) throws UnsupportedEncodingException, SchemaChangeException {
     int i = 0;

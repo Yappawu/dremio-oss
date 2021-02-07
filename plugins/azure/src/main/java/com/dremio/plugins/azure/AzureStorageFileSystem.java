@@ -29,15 +29,14 @@ import org.apache.hadoop.fs.Path;
 import org.asynchttpclient.AsyncHttpClient;
 
 import com.dremio.common.AutoCloseables;
+import com.dremio.common.util.Retryer;
 import com.dremio.exec.hadoop.MayProvideAsyncStream;
 import com.dremio.exec.store.dfs.DremioFileSystemCache;
 import com.dremio.exec.store.dfs.FileSystemConf;
 import com.dremio.io.AsyncByteReader;
 import com.dremio.plugins.azure.AzureStorageConf.AccountKind;
-import com.dremio.plugins.azure.utils.AzureAsyncHttpClientUtils;
+import com.dremio.plugins.azure.utils.AsyncHttpClientProvider;
 import com.dremio.plugins.util.ContainerFileSystem;
-
-import io.netty.util.HashedWheelTimer;
 
 /**
  * A container file system implementation for Azure Storage.
@@ -76,7 +75,6 @@ public class AzureStorageFileSystem extends ContainerFileSystem implements MayPr
   private ContainerProvider containerProvider;
   private AzureAuthTokenProvider authProvider;
   private final DremioFileSystemCache fsCache = new DremioFileSystemCache();
-  private final HashedWheelTimer poolTimer = new HashedWheelTimer();
 
 
   private AsyncHttpClient asyncHttpClient;
@@ -85,23 +83,11 @@ public class AzureStorageFileSystem extends ContainerFileSystem implements MayPr
   public void close() throws IOException {
     AutoCloseables.close(IOException.class,
       () -> fsCache.closeAll(true),
-      asyncHttpClient,
-      poolTimer::stop,
       super::close);
   }
 
   protected AzureStorageFileSystem() {
     super(FileSystemConf.CloudFileSystemScheme.AZURE_STORAGE_FILE_SYSTEM_SCHEME.getScheme(), CONTAINER_HUMAN_NAME, a -> true);
-  }
-
-  private void setupClient(String accountName, boolean isSecure) {
-    if (asyncHttpClient == null || asyncHttpClient.isClosed()) {
-      synchronized (this) {
-        if (asyncHttpClient == null || asyncHttpClient.isClosed()) {
-          asyncHttpClient = AzureAsyncHttpClientUtils.newClient(accountName, isSecure, poolTimer);
-        }
-      }
-    }
   }
 
   @Override
@@ -119,7 +105,7 @@ public class AzureStorageFileSystem extends ContainerFileSystem implements MayPr
     // -- End --
 
     account = Objects.requireNonNull(conf.get(ACCOUNT));
-    setupClient(account, secure);
+    asyncHttpClient = AsyncHttpClientProvider.getInstance();
 
     if (credentialsType == AZURE_ACTIVE_DIRECTORY) {
       clientID = Objects.requireNonNull(conf.get(CLIENT_ID));
@@ -225,9 +211,13 @@ public class AzureStorageFileSystem extends ContainerFileSystem implements MayPr
   }
 
   @Override
-  protected ContainerHolder getUnknownContainer(String name) throws IOException {
-    // no lazy loading since it is slow.
-    return null;
+  protected ContainerHolder getUnknownContainer(String containerName) throws IOException {
+    try {
+      containerProvider.assertContainerExists(containerName);
+    } catch (Retryer.OperationFailedAfterRetriesException e) {
+      throw e.getWrappedCause(IOException.class, ex -> new IOException(ex));
+    }
+    return new ContainerCreatorImpl(this, containerName).toContainerHolder();
   }
 
   @Override
@@ -236,7 +226,7 @@ public class AzureStorageFileSystem extends ContainerFileSystem implements MayPr
   }
 
   @Override
-  public AsyncByteReader getAsyncByteReader(Path path, String version) throws IOException {
+  public AsyncByteReader getAsyncByteReader(Path path, String version) {
     return new AzureAsyncReader(account, path, authProvider, version, secure, asyncHttpClient);
   }
 }

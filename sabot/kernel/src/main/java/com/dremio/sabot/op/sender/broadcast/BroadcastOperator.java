@@ -19,7 +19,9 @@ import java.util.List;
 
 import javax.annotation.Nullable;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.OutOfMemoryException;
+import org.apache.arrow.vector.compression.NoCompressionCodec;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
@@ -42,8 +44,6 @@ import com.google.common.base.Function;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.FluentIterable;
 import com.google.common.primitives.Ints;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * Broadcast Sender broadcasts incoming batches to all receivers (one or more).
@@ -185,7 +185,7 @@ public class BroadcastOperator extends BaseSender {
           handle.getMajorFragmentId(),
           handle.getMinorFragmentId(),
           config.getReceiverMajorFragmentId(),
-          new ArrowRecordBatch(arrowRecordBatch.getLength(), arrowRecordBatch.getNodes(), buffers, false),
+          new ArrowRecordBatch(arrowRecordBatch.getLength(), arrowRecordBatch.getNodes(), buffers, NoCompressionCodec.DEFAULT_BODY_COMPRESSION, false),
           receivingMinorFragments[i]);
       updateStats(batch);
       tunnels[i].sendRecordBatch(batch);

@@ -125,7 +125,7 @@
  - GET /dataset/{cpath}/version/{version}/parents   
    > `<=` java.util.List`<`[com.dremio.dac.explore.model.ParentDatasetUI](#class-comdremiodacexploremodelparentdatasetui)`>`   
 
- - GET /dataset/{cpath}/version/{version}/preview?tipVersion={com.dremio.service.namespace.dataset.DatasetVersion}&limit={java.lang.Integer}   
+ - GET /dataset/{cpath}/version/{version}/preview?tipVersion={com.dremio.service.namespace.dataset.DatasetVersion}&limit={java.lang.Integer}&engineName={String}   
    > `<=` [com.dremio.dac.explore.model.InitialPreviewResponse](#class-comdremiodacexploremodelinitialpreviewresponse)   
 
  - POST /dataset/{cpath}/version/{version}/replace   
@@ -143,7 +143,7 @@
  - GET /dataset/{cpath}/version/{version}/review?jobId={String}&tipVersion={com.dremio.service.namespace.dataset.DatasetVersion}&limit={java.lang.Integer}   
    > `<=` [com.dremio.dac.explore.model.InitialPreviewResponse](#class-comdremiodacexploremodelinitialpreviewresponse)   
 
- - GET /dataset/{cpath}/version/{version}/run?tipVersion={com.dremio.service.namespace.dataset.DatasetVersion}   
+ - GET /dataset/{cpath}/version/{version}/run?tipVersion={com.dremio.service.namespace.dataset.DatasetVersion}&engineName={String}   
    > `<=` [com.dremio.dac.explore.model.InitialRunResponse](#class-comdremiodacexploremodelinitialrunresponse)   
 
  - POST /dataset/{cpath}/version/{version}/save?as={com.dremio.dac.explore.model.DatasetPath}&savedTag={String}   
@@ -179,7 +179,7 @@
  - GET /datasets/summary/{path: .*} (path params: path={String})   
    > `<=` [com.dremio.dac.explore.model.DatasetSummary](#class-comdremiodacexploremodeldatasetsummary)   
 
- - POST /datasets/new_untitled?parentDataset={com.dremio.dac.explore.model.DatasetPath}&newVersion={com.dremio.service.namespace.dataset.DatasetVersion}&limit={java.lang.Integer}   
+ - POST /datasets/new_untitled?parentDataset={com.dremio.dac.explore.model.DatasetPath}&newVersion={com.dremio.service.namespace.dataset.DatasetVersion}&limit={java.lang.Integer}&engineName={String}   
    > `=>`   
    > `<=` [com.dremio.dac.explore.model.InitialPreviewResponse](#class-comdremiodacexploremodelinitialpreviewresponse)   
 
@@ -300,6 +300,13 @@
  - GET /job/{jobId}/r/{rowNum}/c/{columnName} (path params: jobId={com.dremio.service.job.proto.JobId}, rowNum={int}, columnName={String})   
    > `<=` java.lang.Object   
 
+ - POST /job/{jobId}/reflection/{reflectionId}/cancel (path params: jobId={String}, reflectionId={String})   
+   > `=>`   
+   > `<=` [com.dremio.dac.resource.NotificationResponse](#class-comdremiodacresourcenotificationresponse)   
+
+ - GET /job/{jobId}/reflection/{reflectionId}/details (path params: jobId={String}, reflectionId={String})   
+   > `<=` [com.dremio.dac.model.job.JobDetailsUI](#class-comdremiodacmodeljobjobdetailsui)   
+
  - POST /job/{jobId}/cancel (path params: jobId={String})   
    > `=>`   
    > `<=` [com.dremio.dac.resource.NotificationResponse](#class-comdremiodacresourcenotificationresponse)   
@@ -311,6 +318,9 @@
 ## Resource defined by class com.dremio.dac.resource.JobsResource
 
  - GET /jobs?filter={String}&sort={String}&order={com.dremio.dac.model.job.ResultOrder}&offset={int}0&limit={int}100   
+   > `<=` [com.dremio.dac.model.job.JobsUI](#class-comdremiodacmodeljobjobsui)   
+
+ - GET /jobs/reflection/{reflectionId}?offset={int}0&limit={int}100 (path params: reflectionId={String})   
    > `<=` [com.dremio.dac.model.job.JobsUI](#class-comdremiodacmodeljobjobsui)   
 
 
@@ -338,16 +348,33 @@
    > `<=` javax.ws.rs.core.Response   
 
 
+## Resource defined by class com.dremio.dac.resource.PowerBIResource
+
+ - GET /powerbi/{datasetId}   
+   > `=>`   
+   > Host: {String}   
+   > `<=` javax.ws.rs.core.Response   
+
+
 ## Resource defined by class com.dremio.dac.admin.ProfileResource
 
  - GET /profiles/cancel/{queryid} (path params: queryid={String})   
    > `<=` [com.dremio.dac.resource.NotificationResponse](#class-comdremiodacresourcenotificationresponse)   
+
+ - GET /profiles/cancel/{queryid}/reflection/{reflectionId} (path params: queryid={String}, reflectionId={String})   
+   > `<=` [com.dremio.dac.resource.NotificationResponse](#class-comdremiodacresourcenotificationresponse)   
+
+ - GET /profiles/reflection/{reflectionId}/{queryid}.json?attempt={int}0 (path params: queryid={String}, reflectionId={String})   
+   > `<=` String   
 
  - GET /profiles/{queryid}?attempt={int}0 (path params: queryid={String})   
    > `<=` [org.glassfish.jersey.server.mvc.Viewable](#class-orgglassfishjerseyservermvcviewable)   
 
  - GET /profiles/{queryid}.json?attempt={int}0 (path params: queryid={String})   
    > `<=` String   
+
+ - GET /profiles/{queryid}/reflection/{reflectionId}?attempt={int}0 (path params: queryid={String}, reflectionId={String})   
+   > `<=` [org.glassfish.jersey.server.mvc.Viewable](#class-orgglassfishjerseyservermvcviewable)   
 
 
 ## Resource defined by class com.dremio.provision.resource.ProvisioningResource
@@ -376,8 +403,10 @@
 
 ## Resource defined by class com.dremio.dac.explore.bi.QlikResource
 
- - GET /qlik/{datasetPath}   
-   > `<=` [com.dremio.service.namespace.dataset.proto.DatasetConfig](#class-comdremioservicenamespacedatasetprotodatasetconfig)   
+ - GET /qlik/{datasetId}   
+   > `=>`   
+   > Host: {String}   
+   > `<=` javax.ws.rs.core.Response   
 
 
 ## Resource defined by class com.dremio.dac.resource.ResourceTreeResource
@@ -573,7 +602,7 @@
 
 ## Resource defined by class com.dremio.dac.resource.TableauResource
 
- - GET /tableau/{datasetPath}   
+ - GET /tableau/{datasetId}   
    > `=>`   
    > Host: {String}   
    > `<=` javax.ws.rs.core.Response   
@@ -687,6 +716,7 @@
     "abc",
     ...
   ],
+  engineName: "abc",
   sql: "abc",
 }
 ```
@@ -705,6 +735,9 @@
         name: "abc",
         precision: 1,
         scale: 1,
+        serializedField: { /** ByteString **/
+          empty: true | false,
+        },
         startUnit: "abc",
         type: "abc",
         typeFamily: "abc",
@@ -770,7 +803,7 @@
       datasetPath: "abc",
       datasetVersion: "abc",
     },
-    recordSchema: {
+    recordSchema: { /** ByteString **/
       empty: true | false,
     },
     savedTag: "abc",
@@ -783,6 +816,9 @@
         name: "abc",
         precision: 1,
         scale: 1,
+        serializedField: { /** ByteString **/
+          empty: true | false,
+        },
         startUnit: "abc",
         type: "abc",
         typeFamily: "abc",
@@ -858,7 +894,7 @@
     owner: "abc",
     preview: true | false,
     recordsReturned: 1,
-    state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+    state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
     transformDescription: "abc",
     versionedResourcePath: "abc",
   },
@@ -1055,7 +1091,7 @@
         owner: "abc",
         preview: true | false,
         recordsReturned: 1,
-        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
         transformDescription: "abc",
         versionedResourcePath: "abc",
       },
@@ -1104,7 +1140,7 @@
       owner: "abc",
       preview: true | false,
       recordsReturned: 1,
-      state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+      state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
       transformDescription: "abc",
       versionedResourcePath: "abc",
     },
@@ -1232,7 +1268,7 @@
         owner: "abc",
         preview: true | false,
         recordsReturned: 1,
-        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
         transformDescription: "abc",
         versionedResourcePath: "abc",
       },
@@ -1294,7 +1330,7 @@
         owner: "abc",
         preview: true | false,
         recordsReturned: 1,
-        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
         transformDescription: "abc",
         versionedResourcePath: "abc",
       },
@@ -1355,7 +1391,7 @@
         owner: "abc",
         preview: true | false,
         recordsReturned: 1,
-        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+        state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
         transformDescription: "abc",
         versionedResourcePath: "abc",
       },
@@ -1579,6 +1615,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -1657,6 +1696,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -1732,7 +1774,7 @@
           owner: "abc",
           preview: true | false,
           recordsReturned: 1,
-          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
           transformDescription: "abc",
           versionedResourcePath: "abc",
         },
@@ -1806,7 +1848,7 @@
             name: "abc",
             owner: "abc",
             tag: "abc",
-            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
             version: 1,
           },
           fullPathList: [
@@ -1963,12 +2005,19 @@
   attemptDetails: [
     {
       commandPoolWaitTime: 1,
-      enqueuedTime: 1,
+      engineStartTime: 1,
+      executionPlanningTime: 1,
       executionTime: 1,
+      metadataRetrievalTime: 1,
+      pendingTime: 1,
       planningTime: 1,
       profileUrl: "abc",
+      queuedTime: 1,
       reason: "abc",
-      result: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+      result: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
+      runningTime: 1,
+      startingTime: 1,
+      totalTime: 1,
     },
     ...
   ],
@@ -2056,7 +2105,7 @@
   ],
   peakMemory: 1,
   plansConsidered: 1,
-  queryType: "UI_RUN" | "UI_PREVIEW" | "UI_INTERNAL_PREVIEW" | "UI_INTERNAL_RUN" | "UI_EXPORT" | "ODBC" | "JDBC" | "REST" | "ACCELERATOR_CREATE" | "ACCELERATOR_DROP" | "UNKNOWN" | "PREPARE_INTERNAL" | "ACCELERATOR_EXPLAIN" | "UI_INITIAL_PREVIEW",
+  queryType: "UI_RUN" | "UI_PREVIEW" | "UI_INTERNAL_PREVIEW" | "UI_INTERNAL_RUN" | "UI_EXPORT" | "ODBC" | "JDBC" | "REST" | "ACCELERATOR_CREATE" | "ACCELERATOR_DROP" | "UNKNOWN" | "PREPARE_INTERNAL" | "ACCELERATOR_EXPLAIN" | "UI_INITIAL_PREVIEW" | "FLIGHT",
   requestType: "GET_CATALOGS" | "GET_COLUMNS" | "GET_SCHEMAS" | "GET_TABLES" | "CREATE_PREPARE" | "EXECUTE_PREPARE" | "RUN_SQL" | "GET_SERVER_META",
   resourceScheduling: {
     queueId: "abc",
@@ -2075,7 +2124,7 @@
   spilled: true | false,
   sql: "abc",
   startTime: 1,
-  state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+  state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
   stats: {
     inputBytes: 1,
     inputRecords: 1,
@@ -2202,9 +2251,11 @@
       ],
       waitInClient: 1,
     },
-    endpoint: {
+    endpoint: { /** NodeEndpoint **/
       address: "abc",
       availableCores: 1,
+      conduitPort: 1,
+      dremioVersion: "abc",
       engineId: {
         id: "abc",
       },
@@ -2403,7 +2454,7 @@
         "abc",
         ...
       ],
-      queryType: "UI_RUN" | "UI_PREVIEW" | "UI_INTERNAL_PREVIEW" | "UI_INTERNAL_RUN" | "UI_EXPORT" | "ODBC" | "JDBC" | "REST" | "ACCELERATOR_CREATE" | "ACCELERATOR_DROP" | "UNKNOWN" | "PREPARE_INTERNAL" | "ACCELERATOR_EXPLAIN" | "UI_INITIAL_PREVIEW",
+      queryType: "UI_RUN" | "UI_PREVIEW" | "UI_INTERNAL_PREVIEW" | "UI_INTERNAL_RUN" | "UI_EXPORT" | "ODBC" | "JDBC" | "REST" | "ACCELERATOR_CREATE" | "ACCELERATOR_DROP" | "UNKNOWN" | "PREPARE_INTERNAL" | "ACCELERATOR_EXPLAIN" | "UI_INITIAL_PREVIEW" | "FLIGHT",
       requestType: "GET_CATALOGS" | "GET_COLUMNS" | "GET_SCHEMAS" | "GET_TABLES" | "CREATE_PREPARE" | "EXECUTE_PREPARE" | "RUN_SQL" | "GET_SERVER_META",
       resourceSchedulingInfo: {
         queryCost: 1.0,
@@ -2417,6 +2468,7 @@
       },
       resultMetadataList: [
         {
+          arrowMetadataVersion: 1,
           footer: {
             batchList: [
               {
@@ -2457,6 +2509,32 @@
           },
           path: "abc",
           recordCount: 1,
+          screenNodeEndpoint: { /** NodeEndpoint **/
+            address: "abc",
+            availableCores: 1,
+            conduitPort: 1,
+            dremioVersion: "abc",
+            engineId: {
+              id: "abc",
+            },
+            fabricPort: 1,
+            maxDirectMemory: 1,
+            nodeTag: "abc",
+            provisionId: "abc",
+            roles: {
+              distributedCache: true | false,
+              javaExecutor: true | false,
+              logicalPlan: true | false,
+              master: true | false,
+              physicalPlan: true | false,
+              sqlQuery: true | false,
+            },
+            startTime: 1,
+            subEngineId: {
+              id: "abc",
+            },
+            userPort: 1,
+          },
         },
         ...
       ],
@@ -2479,7 +2557,7 @@
       user: "abc",
     },
     reason: "NONE" | "OUT_OF_MEMORY" | "SCHEMA_CHANGE" | "INVALID_DATASET_METADATA" | "JSON_FIELD_CHANGE" | "RESOURCE_TIMEOUT",
-    state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+    state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
     stats: {
       inputBytes: 1,
       inputRecords: 1,
@@ -2537,7 +2615,7 @@
       snowflakeAccelerated: true | false,
       spilled: true | false,
       startTime: 1,
-      state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+      state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
       user: "abc",
     },
     ...
@@ -2587,7 +2665,7 @@
       name: "abc",
       owner: "abc",
       tag: "abc",
-      type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+      type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
       version: 1,
     },
     fullPathList: [
@@ -2621,6 +2699,7 @@
   accelerationNeverExpire: true | false,
   accelerationNeverRefresh: true | false,
   accelerationRefreshPeriod: 1,
+  allowCrossSourceSelection: true | false,
   config: {
   },
   contents: { /** NamespaceTree **/
@@ -2637,6 +2716,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -2715,6 +2797,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -2790,7 +2875,7 @@
           owner: "abc",
           preview: true | false,
           recordsReturned: 1,
-          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
           transformDescription: "abc",
           versionedResourcePath: "abc",
         },
@@ -2889,7 +2974,7 @@
             name: "abc",
             owner: "abc",
             tag: "abc",
-            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
             version: 1,
           },
           fullPathList: [
@@ -2953,6 +3038,7 @@
       ...
     ],
     status: "good" | "bad" | "warn",
+    suggestedUserAction: "abc",
   },
   tag: "abc",
 }
@@ -2968,6 +3054,7 @@
       accelerationNeverExpire: true | false,
       accelerationNeverRefresh: true | false,
       accelerationRefreshPeriod: 1,
+      allowCrossSourceSelection: true | false,
       config: {
       },
       contents: { /** NamespaceTree **/
@@ -2984,6 +3071,9 @@
                   name: "abc",
                   precision: 1,
                   scale: 1,
+                  serializedField: { /** ByteString **/
+                    empty: true | false,
+                  },
                   startUnit: "abc",
                   type: "abc",
                   typeFamily: "abc",
@@ -3062,6 +3152,9 @@
                   name: "abc",
                   precision: 1,
                   scale: 1,
+                  serializedField: { /** ByteString **/
+                    empty: true | false,
+                  },
                   startUnit: "abc",
                   type: "abc",
                   typeFamily: "abc",
@@ -3137,7 +3230,7 @@
               owner: "abc",
               preview: true | false,
               recordsReturned: 1,
-              state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+              state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
               transformDescription: "abc",
               versionedResourcePath: "abc",
             },
@@ -3236,7 +3329,7 @@
                 name: "abc",
                 owner: "abc",
                 tag: "abc",
-                type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+                type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
                 version: 1,
               },
               fullPathList: [
@@ -3300,6 +3393,7 @@
           ...
         ],
         status: "good" | "bad" | "warn",
+        suggestedUserAction: "abc",
       },
       tag: "abc",
     },
@@ -3326,6 +3420,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -3404,6 +3501,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -3479,7 +3579,7 @@
           owner: "abc",
           preview: true | false,
           recordsReturned: 1,
-          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
           transformDescription: "abc",
           versionedResourcePath: "abc",
         },
@@ -3578,7 +3678,7 @@
             name: "abc",
             owner: "abc",
             tag: "abc",
-            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
             version: 1,
           },
           fullPathList: [
@@ -3652,6 +3752,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -3730,6 +3833,9 @@
               name: "abc",
               precision: 1,
               scale: 1,
+              serializedField: { /** ByteString **/
+                empty: true | false,
+              },
               startUnit: "abc",
               type: "abc",
               typeFamily: "abc",
@@ -3805,7 +3911,7 @@
           owner: "abc",
           preview: true | false,
           recordsReturned: 1,
-          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+          state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
           transformDescription: "abc",
           versionedResourcePath: "abc",
         },
@@ -3904,7 +4010,7 @@
             name: "abc",
             owner: "abc",
             tag: "abc",
-            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+            type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
             version: 1,
           },
           fullPathList: [
@@ -3967,6 +4073,9 @@
                   name: "abc",
                   precision: 1,
                   scale: 1,
+                  serializedField: { /** ByteString **/
+                    empty: true | false,
+                  },
                   startUnit: "abc",
                   type: "abc",
                   typeFamily: "abc",
@@ -4045,6 +4154,9 @@
                   name: "abc",
                   precision: 1,
                   scale: 1,
+                  serializedField: { /** ByteString **/
+                    empty: true | false,
+                  },
                   startUnit: "abc",
                   type: "abc",
                   typeFamily: "abc",
@@ -4120,7 +4232,7 @@
               owner: "abc",
               preview: true | false,
               recordsReturned: 1,
-              state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING",
+              state: "NOT_SUBMITTED" | "STARTING" | "RUNNING" | "COMPLETED" | "CANCELED" | "FAILED" | "CANCELLATION_REQUESTED" | "ENQUEUED" | "PLANNING" | "PENDING" | "METADATA_RETRIEVAL" | "QUEUED" | "ENGINE_START" | "EXECUTION_PLANNING" | "INVALID_STATE",
               transformDescription: "abc",
               versionedResourcePath: "abc",
             },
@@ -4219,7 +4331,7 @@
                 name: "abc",
                 owner: "abc",
                 tag: "abc",
-                type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
+                type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG" | "DELTA",
                 version: 1,
               },
               fullPathList: [
@@ -4270,8 +4382,10 @@
 ```
 {
   cpu: 1.0,
+  details: "abc",
   host: "abc",
   ip: "abc",
+  isCompatible: true | false,
   isCoordinator: true | false,
   isExecutor: true | false,
   isMaster: true | false,
@@ -4597,183 +4711,6 @@ any
 }
 ```
 
-## `class com.dremio.service.namespace.dataset.proto.DatasetConfig`
-- Example:
-```
-{
-  accelerationId: "abc",
-  createdAt: 1,
-  datasetFieldsList: [
-    {
-      fieldName: "abc",
-      fieldSchema: { /** ByteString **/
-        empty: true | false,
-      },
-    },
-    ...
-  ],
-  fullPathList: [
-    "abc",
-    ...
-  ],
-  id: {
-    id: "abc",
-  },
-  lastModified: 1,
-  name: "abc",
-  owner: "abc",
-  physicalDataset: {
-    accelerationSettings: {
-      accelerationTTL: {
-        duration: 1,
-        unit: "SECONDS" | "MINUTES" | "HOURS" | "DAYS" | "WEEKS" | "MONTHS",
-      },
-      gracePeriod: 1,
-      method: "FULL" | "INCREMENTAL",
-      neverExpire: true | false,
-      neverRefresh: true | false,
-      refreshField: "abc",
-      refreshPeriod: 1,
-      tag: "abc",
-      version: 1,
-    },
-    allowApproxStats: true | false,
-    deprecatedDatasetSchema: { /** ByteString **/
-      empty: true | false,
-    },
-    formatSettings: {
-      ctime: 1,
-      extendedConfig: { /** ByteString **/
-        empty: true | false,
-      },
-      fullPathList: [
-        "abc",
-        ...
-      ],
-      location: "abc",
-      name: "abc",
-      owner: "abc",
-      tag: "abc",
-      type: "UNKNOWN" | "TEXT" | "JSON" | "CSV" | "TSV" | "PSV" | "AVRO" | "PARQUET" | "HTTP_LOG" | "EXCEL" | "XLS" | "ARROW" | "ICEBERG",
-      version: 1,
-    },
-    isAppendOnly: true | false,
-  },
-  readDefinition: {
-    extendedProperty: { /** ByteString **/
-      empty: true | false,
-    },
-    lastRefreshDate: 1,
-    partitionColumnsList: [
-      "abc",
-      ...
-    ],
-    readSignature: { /** ByteString **/
-      empty: true | false,
-    },
-    scanStats: {
-      cpuCost: 1.0,
-      diskCost: 1.0,
-      recordCount: 1,
-      scanFactor: 1.0,
-      type: "NO_EXACT_ROW_COUNT" | "EXACT_ROW_COUNT",
-    },
-    sortColumnsList: [
-      "abc",
-      ...
-    ],
-    splitVersion: 1,
-  },
-  recordSchema: { /** ByteString **/
-    empty: true | false,
-  },
-  schemaVersion: 1,
-  tag: "abc",
-  totalNumSplits: 1,
-  type: "INVALID_DATASET_TYPE" | "VIRTUAL_DATASET" | "PHYSICAL_DATASET" | "PHYSICAL_DATASET_SOURCE_FILE" | "PHYSICAL_DATASET_SOURCE_FOLDER" | "PHYSICAL_DATASET_HOME_FILE" | "PHYSICAL_DATASET_HOME_FOLDER",
-  version: 1,
-  virtualDataset: {
-    calciteFieldsList: [
-      { /** ViewFieldType **/
-        endUnit: "abc",
-        fractionalSecondPrecision: 1,
-        isNullable: true | false,
-        name: "abc",
-        precision: 1,
-        scale: 1,
-        startUnit: "abc",
-        type: "abc",
-        typeFamily: "abc",
-      },
-      ...
-    ],
-    contextList: [
-      "abc",
-      ...
-    ],
-    fieldOriginsList: [
-      {
-        name: "abc",
-        originsList: [
-          {
-            columnName: "abc",
-            derived: true | false,
-            tableList: [
-              "abc",
-              ...
-            ],
-          },
-          ...
-        ],
-      },
-      ...
-    ],
-    grandParentsList: [
-      { /** ParentDataset **/
-        datasetPathList: [
-          "abc",
-          ...
-        ],
-        level: 1,
-        type: "INVALID_DATASET_TYPE" | "VIRTUAL_DATASET" | "PHYSICAL_DATASET" | "PHYSICAL_DATASET_SOURCE_FILE" | "PHYSICAL_DATASET_SOURCE_FOLDER" | "PHYSICAL_DATASET_HOME_FILE" | "PHYSICAL_DATASET_HOME_FOLDER",
-      },
-      ...
-    ],
-    parentsList: [
-      { /** ParentDataset **/
-        datasetPathList: [
-          "abc",
-          ...
-        ],
-        level: 1,
-        type: "INVALID_DATASET_TYPE" | "VIRTUAL_DATASET" | "PHYSICAL_DATASET" | "PHYSICAL_DATASET_SOURCE_FILE" | "PHYSICAL_DATASET_SOURCE_FOLDER" | "PHYSICAL_DATASET_HOME_FILE" | "PHYSICAL_DATASET_HOME_FOLDER",
-      },
-      ...
-    ],
-    requiredFieldsList: [
-      "abc",
-      ...
-    ],
-    sql: "abc",
-    sqlFieldsList: [
-      { /** ViewFieldType **/
-        endUnit: "abc",
-        fractionalSecondPrecision: 1,
-        isNullable: true | false,
-        name: "abc",
-        precision: 1,
-        scale: 1,
-        startUnit: "abc",
-        type: "abc",
-        typeFamily: "abc",
-      },
-      ...
-    ],
-    version: "abc",
-  },
-}
-```
-
 ## `class com.dremio.service.namespace.file.FileFormat`
 - Example:
 ```
@@ -4846,6 +4783,13 @@ any
   allowAutoStop: true | false,
   awsProps: {
     amiId: "abc",
+    awsTags: [
+      {
+        key: "abc",
+        value: "abc",
+      },
+      ...
+    ],
     connectionProps: {
       accessKey: "abc",
       assumeRole: "abc",
@@ -4855,6 +4799,7 @@ any
       secretKey: "abc",
       stsEndpoint: "abc",
     },
+    disablePublicIp: true | false,
     extraConfProps: "abc",
     instanceType: "abc",
     nodeIamInstanceProfile: "abc",
@@ -4896,6 +4841,13 @@ any
   allowAutoStop: true | false,
   awsProps: {
     amiId: "abc",
+    awsTags: [
+      {
+        key: "abc",
+        value: "abc",
+      },
+      ...
+    ],
     connectionProps: {
       accessKey: "abc",
       assumeRole: "abc",
@@ -4905,6 +4857,7 @@ any
       secretKey: "abc",
       stsEndpoint: "abc",
     },
+    disablePublicIp: true | false,
     extraConfProps: "abc",
     instanceType: "abc",
     nodeIamInstanceProfile: "abc",
@@ -4949,6 +4902,13 @@ any
   allowAutoStop: true | false,
   awsProps: {
     amiId: "abc",
+    awsTags: [
+      {
+        key: "abc",
+        value: "abc",
+      },
+      ...
+    ],
     connectionProps: {
       accessKey: "abc",
       assumeRole: "abc",
@@ -4958,6 +4918,7 @@ any
       secretKey: "abc",
       stsEndpoint: "abc",
     },
+    disablePublicIp: true | false,
     extraConfProps: "abc",
     instanceType: "abc",
     nodeIamInstanceProfile: "abc",
@@ -4970,6 +4931,20 @@ any
   clusterType: "YARN" | "MESOS" | "EC2" | "KUBERNETES" | "GCE" | "AZURE",
   containers: {
     decommissioningCount: 1,
+    decommissioningList: [
+      { /** Container **/
+        containerId: "abc",
+        containerPropertyList: [
+          { /** Property **/
+            key: "abc",
+            type: "JAVA_PROP" | "SYSTEM_PROP" | "ENV_VAR",
+            value: "abc",
+          },
+          ...
+        ],
+      },
+      ...
+    ],
     disconnectedList: [
       { /** Container **/
         containerId: "abc",
@@ -4985,6 +4960,20 @@ any
       ...
     ],
     pendingCount: 1,
+    pendingList: [
+      { /** Container **/
+        containerId: "abc",
+        containerPropertyList: [
+          { /** Property **/
+            key: "abc",
+            type: "JAVA_PROP" | "SYSTEM_PROP" | "ENV_VAR",
+            value: "abc",
+          },
+          ...
+        ],
+      },
+      ...
+    ],
     provisioningCount: 1,
     runningList: [
       { /** Container **/
@@ -5011,6 +5000,7 @@ any
   id: "abc",
   name: "abc",
   shutdownInterval: 1,
+  stateChangeTime: 1,
   tag: "abc",
   yarnProps: {
     distroType: "OTHER" | "APACHE" | "CDH" | "HDP" | "MAPR",
@@ -5040,6 +5030,13 @@ any
       allowAutoStop: true | false,
       awsProps: {
         amiId: "abc",
+        awsTags: [
+          {
+            key: "abc",
+            value: "abc",
+          },
+          ...
+        ],
         connectionProps: {
           accessKey: "abc",
           assumeRole: "abc",
@@ -5049,6 +5046,7 @@ any
           secretKey: "abc",
           stsEndpoint: "abc",
         },
+        disablePublicIp: true | false,
         extraConfProps: "abc",
         instanceType: "abc",
         nodeIamInstanceProfile: "abc",
@@ -5061,6 +5059,20 @@ any
       clusterType: "YARN" | "MESOS" | "EC2" | "KUBERNETES" | "GCE" | "AZURE",
       containers: {
         decommissioningCount: 1,
+        decommissioningList: [
+          { /** Container **/
+            containerId: "abc",
+            containerPropertyList: [
+              { /** Property **/
+                key: "abc",
+                type: "JAVA_PROP" | "SYSTEM_PROP" | "ENV_VAR",
+                value: "abc",
+              },
+              ...
+            ],
+          },
+          ...
+        ],
         disconnectedList: [
           { /** Container **/
             containerId: "abc",
@@ -5076,6 +5088,20 @@ any
           ...
         ],
         pendingCount: 1,
+        pendingList: [
+          { /** Container **/
+            containerId: "abc",
+            containerPropertyList: [
+              { /** Property **/
+                key: "abc",
+                type: "JAVA_PROP" | "SYSTEM_PROP" | "ENV_VAR",
+                value: "abc",
+              },
+              ...
+            ],
+          },
+          ...
+        ],
         provisioningCount: 1,
         runningList: [
           { /** Container **/
@@ -5102,6 +5128,7 @@ any
       id: "abc",
       name: "abc",
       shutdownInterval: 1,
+      stateChangeTime: 1,
       tag: "abc",
       yarnProps: {
         distroType: "OTHER" | "APACHE" | "CDH" | "HDP" | "MAPR",
@@ -5135,6 +5162,7 @@ any
 
 
 #V2 Others: 
+## class com.dremio.dac.explore.bi.PowerBIMessageBodyGenerator
 ## class com.dremio.dac.explore.bi.QlikAppMessageBodyGenerator
 ## class com.dremio.dac.explore.bi.TableauMessageBodyGenerator
 ## class com.dremio.dac.server.DACAuthFilterFeature

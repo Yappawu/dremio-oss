@@ -32,12 +32,14 @@ import org.slf4j.LoggerFactory;
 import com.dremio.common.AutoCloseables;
 import com.dremio.common.concurrent.CloseableExecutorService;
 import com.dremio.common.concurrent.CloseableSchedulerThreadPool;
+import com.dremio.common.concurrent.CloseableThreadPool;
 import com.dremio.common.concurrent.ContextMigratingExecutorService.ContextMigratingCloseableExecutorService;
 import com.dremio.common.concurrent.ExtendedLatch;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.utils.protos.ExternalIdHelper;
 import com.dremio.common.utils.protos.QueryIdHelper;
 import com.dremio.exec.ExecConstants;
+import com.dremio.exec.maestro.MaestroForwarder;
 import com.dremio.exec.maestro.MaestroService;
 import com.dremio.exec.planner.observer.OutOfBandQueryObserver;
 import com.dremio.exec.planner.observer.QueryObserver;
@@ -49,12 +51,10 @@ import com.dremio.exec.proto.UserBitShared.QueryProfile;
 import com.dremio.exec.proto.UserBitShared.UserCredentials;
 import com.dremio.exec.proto.UserProtos.RpcType;
 import com.dremio.exec.rpc.Acks;
-import com.dremio.exec.rpc.CloseableThreadPool;
 import com.dremio.exec.rpc.ResponseSender;
 import com.dremio.exec.rpc.RpcException;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.server.options.SessionOptionManagerImpl;
-import com.dremio.exec.server.options.SystemOptionManager;
 import com.dremio.exec.work.SafeExit;
 import com.dremio.exec.work.foreman.TerminationListenerRegistry;
 import com.dremio.exec.work.rpc.CoordProtocol;
@@ -64,12 +64,14 @@ import com.dremio.exec.work.user.LocalQueryExecutor;
 import com.dremio.exec.work.user.OptionProvider;
 import com.dremio.options.OptionManager;
 import com.dremio.resource.QueryCancelTool;
+import com.dremio.sabot.exec.CancelQueryContext;
 import com.dremio.sabot.rpc.CoordExecService.NoExecToCoordResultsHandler;
 import com.dremio.sabot.rpc.ExecToCoordResultsHandler;
 import com.dremio.sabot.rpc.user.UserRpcUtils;
 import com.dremio.sabot.rpc.user.UserSession;
 import com.dremio.service.Service;
 import com.dremio.service.commandpool.CommandPool;
+import com.dremio.service.jobresults.JobResultsRequest;
 import com.dremio.service.jobtelemetry.JobTelemetryClient;
 import com.dremio.services.fabric.api.FabricRunnerFactory;
 import com.dremio.services.fabric.api.FabricService;
@@ -119,6 +121,7 @@ public class ForemenWorkManager implements Service, SafeExit {
   private final Provider<CommandPool> commandPool;
   protected final Provider<MaestroService> maestroService;
   protected final Provider<JobTelemetryClient> jobTelemetryClient;
+  private final Provider<MaestroForwarder> forwarder;
   private final ForemenTool foremenTool;
   private final QueryCancelTool queryCancelTool;
 
@@ -136,12 +139,14 @@ public class ForemenWorkManager implements Service, SafeExit {
           final Provider<CommandPool> commandPool,
           final Provider<MaestroService> maestroService,
           final Provider<JobTelemetryClient> jobTelemetryClient,
+          final Provider<MaestroForwarder> forwarder,
           final Tracer tracer) {
     this.dbContext = dbContext;
     this.fabric = fabric;
     this.commandPool = commandPool;
     this.maestroService = maestroService;
     this.jobTelemetryClient = jobTelemetryClient;
+    this.forwarder = forwarder;
 
     this.pool = new ContextMigratingCloseableExecutorService<>(new CloseableThreadPool("foreman"), tracer);
     this.execToCoordResultsHandler = new NoExecToCoordResultsHandler();
@@ -310,6 +315,21 @@ public class ForemenWorkManager implements Service, SafeExit {
     return false;
   }
 
+  /**
+   * Cancel queries in given cancel query context
+   *
+   * @param cancelQueryContext
+   */
+  public void cancel(CancelQueryContext cancelQueryContext) {
+    externalIdToForeman.values()
+                       .stream()
+                       .filter(mf->cancelQueryContext.getCancelQueryStates().contains(mf.foreman.getState()))
+                       .forEach(mf->mf.foreman.cancel(cancelQueryContext.getCancelReason(),
+                                                     false,
+                                                      cancelQueryContext.getCancelContext(),
+                                                      cancelQueryContext.isCancelledByHeapMonitor()));
+  }
+
   public boolean resume(ExternalId externalId) {
     final ManagedForeman managed = externalIdToForeman.get(externalId);
     if (managed != null) {
@@ -343,13 +363,18 @@ public class ForemenWorkManager implements Service, SafeExit {
 
   private class ExecToCoordResultsHandlerImpl implements ExecToCoordResultsHandler {
     @Override
-    public void dataArrived(QueryData header, ByteBuf data, ResponseSender sender) throws RpcException {
+    public void dataArrived(QueryData header, ByteBuf data, JobResultsRequest request, ResponseSender sender) throws RpcException {
       ExternalId id = ExternalIdHelper.toExternal(header.getQueryId());
       ManagedForeman managed = externalIdToForeman.get(id);
-      if (managed == null) {
-        logger.debug("User data arrived post query termination, dropping. Data was from QueryId: {}.", QueryIdHelper.getQueryId(header.getQueryId()));
-      } else {
+      if (managed != null) {
+        logger.debug("User Data arrived for QueryId: {}.", QueryIdHelper.getQueryId(header.getQueryId()));
         managed.foreman.dataFromScreenArrived(header, data, sender);
+
+      } else if (request != null) {
+        forwarder.get().dataArrived(request, sender);
+
+      } else {
+        logger.debug("User data arrived post query termination, dropping. Data was from QueryId: {}.", QueryIdHelper.getQueryId(header.getQueryId()));
       }
     }
   }
@@ -390,11 +415,11 @@ public class ForemenWorkManager implements Service, SafeExit {
    * Handler for in-process queries
    */
   private class LocalQueryExecutorImpl implements LocalQueryExecutor {
-    private final SystemOptionManager options;
+    private final OptionManager options;
     private final Executor executor;
 
 
-    public LocalQueryExecutorImpl(SystemOptionManager options, Executor executor) {
+    public LocalQueryExecutorImpl(OptionManager options, Executor executor) {
       super();
       this.options = options;
       this.executor = executor;
@@ -418,17 +443,18 @@ public class ForemenWorkManager implements Service, SafeExit {
         final QueryObserver oobJobObserver = new OutOfBandQueryObserver(observer, executor);
 
         final UserSession session = UserSession.Builder.newBuilder()
-            .withSessionOptionManager(new SessionOptionManagerImpl(options))
-            .setSupportComplexTypes(true)
-            .withCredentials(UserCredentials
-                .newBuilder()
-                .setUserName(config.getUsername())
-                .build())
-            .exposeInternalSources(config.isExposingInternalSources())
-            .withDefaultSchema(config.getSqlContext())
-            .withSubstitutionSettings(config.getSubstitutionSettings())
-            .withClientInfos(UserRpcUtils.getRpcEndpointInfos("Dremio Java local client"))
-            .build();
+          .withSessionOptionManager(new SessionOptionManagerImpl(options.getOptionValidatorListing()), options)
+          .setSupportComplexTypes(true)
+          .withCredentials(UserCredentials
+            .newBuilder()
+            .setUserName(config.getUsername())
+            .build())
+          .exposeInternalSources(config.isExposingInternalSources())
+          .withDefaultSchema(config.getSqlContext())
+          .withSubstitutionSettings(config.getSubstitutionSettings())
+          .withClientInfos(UserRpcUtils.getRpcEndpointInfos("Dremio Java local client"))
+          .withEngineName(config.getEngineName())
+          .build();
 
         final ReAttemptHandler attemptHandler = newInternalAttemptHandler(options, config.isFailIfNonEmptySent());
         final UserRequest userRequest = new UserRequest(prepare ? RpcType.CREATE_PREPARED_STATEMENT : RpcType.RUN_QUERY, query, runInSameThread);
@@ -477,7 +503,7 @@ public class ForemenWorkManager implements Service, SafeExit {
                 final ReAttemptHandler attemptHandler = newExternalAttemptHandler(session.getOptions());
                 submit(externalId, oobObserver, session, request, registry, null, attemptHandler);
                 return null;
-              }, false);
+              }, request.runInSameThread());
     }
 
     @Override

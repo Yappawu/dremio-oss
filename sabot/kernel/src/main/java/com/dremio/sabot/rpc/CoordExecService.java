@@ -22,7 +22,10 @@ import javax.inject.Provider;
 
 import org.apache.arrow.memory.BufferAllocator;
 
+import com.dremio.common.AutoCloseables;
+import com.dremio.common.concurrent.CloseableThreadPool;
 import com.dremio.common.config.SabotConfig;
+import com.dremio.common.utils.protos.QueryIdHelper;
 import com.dremio.exec.proto.CoordExecRPC.ActivateFragments;
 import com.dremio.exec.proto.CoordExecRPC.CancelFragments;
 import com.dremio.exec.proto.CoordExecRPC.ExecutorQueryProfile;
@@ -45,6 +48,7 @@ import com.dremio.exec.rpc.RpcException;
 import com.dremio.exec.rpc.UserRpcException;
 import com.dremio.exec.service.executor.ExecutorService;
 import com.dremio.service.Service;
+import com.dremio.service.jobresults.JobResultsRequest;
 import com.dremio.service.jobtelemetry.JobTelemetryClient;
 import com.dremio.service.jobtelemetry.JobTelemetryServiceGrpc;
 import com.dremio.service.jobtelemetry.PutExecutorProfileRequest;
@@ -75,6 +79,7 @@ public class CoordExecService implements Service {
   private final Provider<CoordinationProtos.NodeEndpoint> selfEndpoint;
   private final Provider<JobTelemetryClient> jobTelemetryClient;
   private final RpcConfig config;
+  private CloseableThreadPool rpcOffloadPool;
 
   /**
    * Create a new exec service. Note that at start time, the provider to one of
@@ -113,13 +118,13 @@ public class CoordExecService implements Service {
 
   @Override
   public void close() throws Exception {
-    allocator.close();
+    AutoCloseables.close(allocator, rpcOffloadPool);
   }
 
   @Override
   public void start() throws Exception {
     fabricService.get().registerProtocol(new CoordExecProtocol());
-
+    rpcOffloadPool = new CloseableThreadPool("Fabric-RPC-Offload");
     final String prefix = "rpc";
     Metrics.newGauge(prefix + "bit.control.current", allocator::getAllocatedMemory);
     Metrics.newGauge(prefix + "bit.control.peak", allocator::getPeakMemoryAllocation);
@@ -235,26 +240,61 @@ public class CoordExecService implements Service {
         // executor > coordinator
         case RpcType.REQ_QUERY_DATA_VALUE:
           QueryData header = get(pBody, QueryData.PARSER);
-          execResults.get().dataArrived(header, dBody, sender);
+          execResults.get().dataArrived(header, dBody, null, sender);
           break;
 
+        // offload screen complete, node query complete and node query error to a different thread.
+        // this causes outbound rpcs to master like
+        // 1. profile update
+        // 2. wlm stats update
+        // the first is likely to cause a deadlock
+        // the second will fail and block the query
         case RpcType.REQ_NODE_QUERY_SCREEN_COMPLETION_VALUE:
           NodeQueryScreenCompletion completion = get(pBody, NodeQueryScreenCompletion.PARSER);
-          execStatus.get().screenCompleted(completion);
-          sender.send(OK);
+          rpcOffloadPool.submit( () -> {
+            try {
+              logger.debug("Processing screen complete for query {} in a different thread.",
+                QueryIdHelper.getQueryId(completion.getId()));
+              execStatus.get().screenCompleted(completion);
+              sender.send(OK);
+            } catch (RpcException e) {
+              sender.sendFailure(new UserRpcException(selfEndpoint.get(), "Failure processing " +
+                "screen complete.", e));
+            }
+            });
           break;
 
         case RpcType.REQ_NODE_QUERY_COMPLETION_VALUE:
-          NodeQueryCompletion screenCompletion = get(pBody, NodeQueryCompletion.PARSER);
-          execStatus.get().nodeQueryCompleted(screenCompletion);
-          sender.send(OK);
+          NodeQueryCompletion nodeQueryCompletion = get(pBody, NodeQueryCompletion.PARSER);
+          rpcOffloadPool.submit( () -> {
+            try {
+              logger.debug("Processing node query complete for query {} and endpoint {} in a " +
+                  "different thread.", QueryIdHelper.getQueryId(nodeQueryCompletion.getId()), nodeQueryCompletion.getEndpoint());
+              execStatus.get().nodeQueryCompleted(nodeQueryCompletion);
+              sender.send(OK);
+            } catch (RpcException e) {
+              sender.sendFailure(new UserRpcException(selfEndpoint.get(), "Failure processing " +
+                "node query complete.", e));
+            }
+
+          });
           break;
 
         case RpcType.REQ_NODE_QUERY_ERROR_VALUE:
           NodeQueryFirstError firstError = get(pBody, NodeQueryFirstError.PARSER);
-          execStatus.get().nodeQueryMarkFirstError(firstError);
-          sender.send(OK);
+          rpcOffloadPool.submit( () -> {
+            try {
+              logger.debug("Processing node first error for query {} and endpoint {} in a " +
+                "different thread.", QueryIdHelper.getQueryId(firstError.getHandle().getQueryId()), firstError.getEndpoint());
+              execStatus.get().nodeQueryMarkFirstError(firstError);
+              sender.send(OK);
+            } catch (RpcException e) {
+              sender.sendFailure(new UserRpcException(selfEndpoint.get(), "Failure processing " +
+                "node first error.", e));
+            }
+          });
           break;
+
         case RpcType.REQ_NODE_QUERY_PROFILE_VALUE:
           ExecutorQueryProfile profile = get(pBody, ExecutorQueryProfile.PARSER);
           // propagate to job-telemetry service (in-process server).
@@ -313,7 +353,7 @@ public class CoordExecService implements Service {
     public NoExecToCoordResultsHandler(){}
 
     @Override
-    public void dataArrived(QueryData header, ByteBuf data, ResponseSender sender) throws RpcException {
+    public void dataArrived(QueryData header, ByteBuf data, JobResultsRequest request, ResponseSender sender) throws RpcException {
       throw new RpcException("This daemon doesn't support coordination operations.");
     }
   }

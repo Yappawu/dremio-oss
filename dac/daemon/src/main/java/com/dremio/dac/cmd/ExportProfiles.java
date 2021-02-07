@@ -35,6 +35,7 @@ import com.dremio.dac.resource.ExportProfilesResource;
 import com.dremio.dac.resource.ExportProfilesStats;
 import com.dremio.dac.server.DACConfig;
 import com.dremio.dac.server.admin.profile.ProfilesExporter;
+import com.dremio.datastore.LocalKVStoreProvider;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.google.common.annotations.VisibleForTesting;
 
@@ -110,6 +111,8 @@ public class ExportProfiles {
     private boolean offlineMode = false;
   }
 
+  private static boolean isTimeSet = true;
+
   public static void main(String[] args)
     throws Exception {
     final ExportProfilesOptions options = new ExportProfilesOptions();
@@ -184,27 +187,28 @@ public class ExportProfiles {
     throws IOException, GeneralSecurityException {
     final WebClient client = new WebClient(dacConfig, userName, password, !acceptAll);
 
-    AdminLogger.log(client.buildPost(ExportProfilesStats.class, "/export-profiles", getAPIExportParams(options)).retrieveStats());
+    AdminLogger.log(client.buildPost(ExportProfilesStats.class, "/export-profiles", getAPIExportParams(options))
+      .retrieveStats(options.fromDate, options.toDate, isTimeSet));
 
   }
 
   private static void exportOffline(ExportProfilesOptions options, DACConfig dacConfig)
     throws Exception {
-    Optional<LegacyKVStoreProvider> providerOptional = CmdUtils.getLegacyKVStoreProvider(dacConfig.getConfig());
+    Optional<LocalKVStoreProvider> providerOptional = CmdUtils.getKVStoreProvider(dacConfig.getConfig());
     if (!providerOptional.isPresent()) {
       AdminLogger.log("No database found. Profiles are not exported");
       return;
     }
-    try (LegacyKVStoreProvider kvStoreProvider = providerOptional.get()) {
+    try (LocalKVStoreProvider kvStoreProvider = providerOptional.get()) {
       kvStoreProvider.start();
-      exportOffline(options, kvStoreProvider);
+      exportOffline(options, kvStoreProvider.asLegacy());
     }
   }
 
   static void exportOffline(ExportProfilesOptions options, LegacyKVStoreProvider provider)
     throws Exception {
       ProfilesExporter exporter = ExportProfilesResource.getExporter(getAPIExportParams(options));
-      AdminLogger.log(exporter.export(provider).retrieveStats());
+      AdminLogger.log(exporter.export(provider).retrieveStats(options.fromDate, options.toDate, isTimeSet));
   }
 
   @VisibleForTesting
@@ -218,9 +222,11 @@ public class ExportProfiles {
   static void setTime(ExportProfilesOptions options) {
     if (options.toDate == null) {
       options.toDate = LocalDateTime.now();
+      isTimeSet = false;
     }
     if (options.fromDate == null) {
-      options.fromDate = options.toDate.minusMinutes(30);
+      options.fromDate = options.toDate.minusDays(30);
+      isTimeSet = false;
     }
     if (!options.fromDate.isBefore(options.toDate)) {
       throw new ParameterException(String.format("'from' parameter (%s) should be less than 'to' parameter (%s)",

@@ -39,12 +39,12 @@ import com.dremio.exec.proto.UserBitShared.StreamProfile;
 import com.dremio.exec.server.BootStrapContext;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.server.SabotNode;
-import com.dremio.exec.server.options.DefaultOptionManager;
 import com.dremio.exec.service.executor.ExecutorServiceImpl;
 import com.dremio.exec.store.CatalogService;
 import com.dremio.exec.work.SafeExit;
 import com.dremio.exec.work.WorkStats;
 import com.dremio.options.OptionManager;
+import com.dremio.resource.GroupResourceInformation;
 import com.dremio.sabot.exec.context.ContextInformationFactory;
 import com.dremio.sabot.exec.fragment.FragmentExecutor;
 import com.dremio.sabot.exec.fragment.FragmentExecutorBuilder;
@@ -69,7 +69,7 @@ import com.google.common.collect.Sets;
  * Service managing fragment execution.
  */
 public class FragmentWorkManager implements Service, SafeExit {
-//  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FragmentWorkManager.class);
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FragmentWorkManager.class);
 
   private final BootStrapContext context;
   private final Provider<NodeEndpoint> identity;
@@ -82,7 +82,6 @@ public class FragmentWorkManager implements Service, SafeExit {
 
   private FragmentStatusThread statusThread;
   private ThreadsStatsCollector statsCollectorThread;
-  private HeapMonitorThread heapMonitorThread;
 
   private final Provider<TaskPool> pool;
   private FragmentExecutors fragmentExecutors;
@@ -98,8 +97,8 @@ public class FragmentWorkManager implements Service, SafeExit {
   private final Provider<JobResultsClientFactory> jobResultsClientFactoryProvider;
 
   private ExtendedLatch exitLatch = null; // This is used to wait to exit when things are still running
-  private DefaultOptionManager defaultOptionManager;
   private com.dremio.exec.service.executor.ExecutorService executorService;
+  private HeapMonitorManager heapMonitorManager = null;
 
   public FragmentWorkManager(
     final BootStrapContext context,
@@ -110,7 +109,6 @@ public class FragmentWorkManager implements Service, SafeExit {
     final Provider<ContextInformationFactory> contextInformationFactory,
     final Provider<WorkloadTicketDepot> workloadTicketDepotProvider,
     final Provider<TaskPool> taskPool,
-    final DefaultOptionManager defaultOptionManager,
     final Provider<MaestroClientFactory> maestroServiceClientFactoryProvider,
     final Provider<JobTelemetryExecutorClientFactory> jobTelemetryClientFactoryProvider,
     final Provider<JobResultsClientFactory> jobResultsClientFactoryProvider) {
@@ -122,7 +120,6 @@ public class FragmentWorkManager implements Service, SafeExit {
     this.contextInformationFactory = contextInformationFactory;
     this.workloadTicketDepotProvider = workloadTicketDepotProvider;
     this.pool = taskPool;
-    this.defaultOptionManager = defaultOptionManager;
     this.workStats = new WorkStatsImpl();
     this.executorService = new ExecutorServiceImpl.NoExecutorService();
     this.maestroServiceClientFactoryProvider = maestroServiceClientFactoryProvider;
@@ -167,25 +164,44 @@ public class FragmentWorkManager implements Service, SafeExit {
     /**
      * @return number of running fragments / max width per node
      */
-    @Override
-    public float getClusterLoad() {
-      final long maxWidthPerNode = bitContext.getClusterResourceInformation().getAverageExecutorCores(bitContext.getOptionManager());
+
+    private float getClusterLoadImpl(GroupResourceInformation groupResourceInformation) {
+      final long maxWidthPerNode = groupResourceInformation.getAverageExecutorCores(bitContext.getOptionManager());
       Preconditions.checkState(maxWidthPerNode > 0, "No executors are available. Unable to determine cluster load");
       return fragmentExecutors.size() / (maxWidthPerNode * 1.0f);
     }
 
     @Override
-    public double getMaxWidthFactor() {
+    public float getClusterLoad() {
+      return getClusterLoadImpl(bitContext.getClusterResourceInformation());
+    }
+
+    @Override
+    public float getClusterLoad(GroupResourceInformation groupResourceInformation) {
+      return getClusterLoadImpl(groupResourceInformation);
+    }
+
+    private double getMaxWidthFactorImpl(GroupResourceInformation groupResourceInformation) {
       final OptionManager options = bitContext.getOptionManager();
       final double loadCutoff = options.getOption(ExecConstants.LOAD_CUT_OFF);
       final double loadReduction = options.getOption(ExecConstants.LOAD_REDUCTION);
 
-      float clusterLoad = getClusterLoad();
+      float clusterLoad = getClusterLoad(groupResourceInformation);
       if (clusterLoad < loadCutoff) {
         return 1.0; // no reduction when load is below load.cut_off
       }
 
       return Math.max(0, 1.0 - clusterLoad * loadReduction);
+    }
+
+    @Override
+    public double getMaxWidthFactor() {
+      return getMaxWidthFactorImpl(bitContext.getClusterResourceInformation());
+    }
+
+    @Override
+    public double getMaxWidthFactor(GroupResourceInformation groupResourceInformation) {
+      return getMaxWidthFactorImpl(groupResourceInformation);
     }
 
     private class FragmentInfoTransformer implements Function<FragmentExecutor, FragmentInfo>{
@@ -299,6 +315,8 @@ public class FragmentWorkManager implements Service, SafeExit {
 
     final FragmentExecutorBuilder builder = new FragmentExecutorBuilder(
         clerk,
+        fragmentExecutors,
+        bitContext.getEndpoint(),
         maestroProxy,
         bitContext.getConfig(),
         bitContext.getClusterCoordinator(),
@@ -314,9 +332,10 @@ public class FragmentWorkManager implements Service, SafeExit {
         bitContext.getDecimalFunctionImplementationRegistry(),
         context.getNodeDebugContextProvider(),
         bitContext.getSpillService(),
+        bitContext.getCompiler(),
         ClusterCoordinator.Role.fromEndpointRoles(identity.get().getRoles()),
-        defaultOptionManager,
-        jobResultsClientFactoryProvider);
+        jobResultsClientFactoryProvider,
+        identity);
 
     executorService = new ExecutorServiceImpl(fragmentExecutors,
             bitContext, builder);
@@ -331,15 +350,13 @@ public class FragmentWorkManager implements Service, SafeExit {
     statsCollectorThread = new ThreadsStatsCollector(slicingThreadIds);
     statsCollectorThread.start();
 
-    // This makes sense only on executor nodes.
-    if (bitContext.isExecutor() &&
-        bitContext.getOptionManager().getOption(ExecConstants.ENABLE_HEAP_MONITORING)) {
-
-      HeapClawBackStrategy strategy = new FailGreediestQueriesStrategy(fragmentExecutors, clerk);
-      long thresholdPercentage =
-          bitContext.getOptionManager().getOption(ExecConstants.HEAP_MONITORING_CLAWBACK_THRESH_PERCENTAGE);
-      heapMonitorThread = new HeapMonitorThread(strategy, thresholdPercentage);
-      heapMonitorThread.start();
+    if (bitContext.isExecutor()) {
+      HeapClawBackStrategy heapClawBackStrategy = new FailGreediestQueriesStrategy(fragmentExecutors, clerk);
+      logger.info("Starting heap monitor manager in executor");
+      heapMonitorManager = new HeapMonitorManager(() -> bitContext.getOptionManager(),
+                                                  heapClawBackStrategy,
+                                                  ClusterCoordinator.Role.EXECUTOR);
+      heapMonitorManager.start();
     }
 
     final String prefix = "rpc";
@@ -362,7 +379,7 @@ public class FragmentWorkManager implements Service, SafeExit {
 
   @Override
   public void close() throws Exception {
-    AutoCloseables.close(statusThread, statsCollectorThread, heapMonitorThread,
+    AutoCloseables.close(statusThread, statsCollectorThread, heapMonitorManager,
       closeableExecutor, fragmentExecutors, maestroProxy, allocator);
   }
 

@@ -22,7 +22,7 @@
 
   <groupId>com.dremio</groupId>
   <artifactId>dremio-parent</artifactId>
-  <version>4.3.1-202005202256080999-5dcfb82a</version>
+  <version>13.0.0-202101272034330307-20fb9275</version>
   <packaging>pom</packaging>
 
   <name>Dremio - Parent</name>
@@ -38,9 +38,9 @@
         Dependencies version for this module
         Submodules should rely on dependenciesManagement as much as possible
     -->
-    <arrow.version>0.18.0-20200505155812-4c5cbe98c7-dremio</arrow.version>
+    <arrow.version>3.0.0-20201218102458-4bb1c04f92-dremio</arrow.version>
     <avatica.version>1.12.0</avatica.version>
-    <calcite.version>1.16.0-202005121834460402-d60e02b</calcite.version>
+    <calcite.version>1.16.0-202101020531550866-5383404</calcite.version>
     <derby.version>10.14.2.0</derby.version>
     <jcommander.version>1.71-1499290832-ab3e8cf</jcommander.version>
     <javax.servlet.version>3.1.0</javax.servlet.version>
@@ -49,19 +49,19 @@
     <fmpp.version>0.9.15</fmpp.version>
     <freemarker.version>2.3.28</freemarker.version>
 
-    <hibernate-validator.version>6.1.2.Final</hibernate-validator.version>
+    <hibernate-validator.version>6.1.5.Final</hibernate-validator.version>
 
-    <hadoop.version>3.2.1-dremio-202005181459080402-feba629</hadoop.version>
+    <hadoop.version>3.2.1-dremio-202101121111520916-3f79071</hadoop.version>
     <avro.version>1.9.2</avro.version>
-    <iceberg.version>0.7.0-incubating</iceberg.version>
+    <iceberg.version>0.9.0</iceberg.version>
 
     <plugin.hive2.azure-storage.version>8.3.0</plugin.hive2.azure-storage.version>
-    <plugin.hive2.azure-datalake.version>2.3.3-201901300025380807-2bdda72</plugin.hive2.azure-datalake.version>
-    <plugin.hive2.hadoop-azure.version>2.8.5-dremio-r2-d1532684d9fd0f51b3451fda22d5f0be503a167c</plugin.hive2.hadoop-azure.version>
+    <plugin.hive2.azure-datalake.version>2.3.3-202004281751280881-379c12c</plugin.hive2.azure-datalake.version>
+    <plugin.hive2.hadoop-azure.version>2.8.5-dremio-r2-d65ae5d215c7b9d342ccd1edfb8f42ead358feb9</plugin.hive2.hadoop-azure.version>
     <plugin.hive2.hadoop-azure-datalake.version>2.8.5</plugin.hive2.hadoop-azure-datalake.version>
     <plugin.hive2.aws-sdk.version>1.11.761</plugin.hive2.aws-sdk.version>
     <plugin.hive2.hadoop.version>2.8.5</plugin.hive2.hadoop.version>
-    <plugin.hive2.hive.version>2.1.1-dremio-202004220420450487-2c6606c</plugin.hive2.hive.version>
+    <plugin.hive2.hive.version>2.1.1-dremio-202007281636460620-4925919</plugin.hive2.hive.version>
     <plugin.hive2.datanucleus-api-jdo.version>4.2.1</plugin.hive2.datanucleus-api-jdo.version>
     <plugin.hive2.datanucleus-core.version>4.1.6</plugin.hive2.datanucleus-core.version>
     <plugin.hive2.datanucleus-rdbms.version>4.1.7</plugin.hive2.datanucleus-rdbms.version>
@@ -70,6 +70,7 @@
     <plugin.hive2.mapr.hadoop.version>2.7.0-mapr-1803</plugin.hive2.mapr.hadoop.version>
     <plugin.hive2.mapr.hive.version>2.1.1-mapr-1803-202004220542160537-7eb4f70</plugin.hive2.mapr.hive.version>
     <plugin.hive2.mapr.maprfs.version>6.0.1-mapr-client-dremio-20190717</plugin.hive2.mapr.maprfs.version>
+    <plugin.hive2.aws.glue.version>1.10.0-202006290831310925-84f4082</plugin.hive2.aws.glue.version>
 
     <!-- [DX-18063] HBase versions older than 1.1.7 get version info using package-info.class
     metadata. However it is unreliable to get this when both the parent and child classloaders
@@ -77,16 +78,16 @@
     -->
     <plugin.hive2.hbase.version>1.1.13</plugin.hive2.hbase.version>
 
-    <plugin.hive3.hadoop.version>3.2.1-dremio-202005181459080402-feba629</plugin.hive3.hadoop.version>
+    <plugin.hive3.hadoop.version>3.2.1-dremio-202101121111520916-3f79071</plugin.hive3.hadoop.version>
     <plugin.hive3.azure-storage.version>8.3.0</plugin.hive3.azure-storage.version>
-    <plugin.hive3.azure-datalake.version>2.3.3-201901300025380807-2bdda72</plugin.hive3.azure-datalake.version>
+    <plugin.hive3.azure-datalake.version>2.3.3-202004281751280881-379c12c</plugin.hive3.azure-datalake.version>
     <plugin.hive3.hadoop-azure.version>${plugin.hive3.hadoop.version}</plugin.hive3.hadoop-azure.version>
     <plugin.hive3.hadoop-azure-datalake.version>${plugin.hive3.hadoop.version}</plugin.hive3.hadoop-azure-datalake.version>
     <plugin.hive3.aws-hadoop.version>${plugin.hive3.hadoop.version}</plugin.hive3.aws-hadoop.version>
     <plugin.hive3.aws-sdk.version>1.11.761</plugin.hive3.aws-sdk.version>
-    <plugin.hive3.hive.version>3.1.1-dremio-201909111144580113-04156e1</plugin.hive3.hive.version>
+    <plugin.hive3.hive.version>3.1.1-dremio-202012071527090472-7e70c1a</plugin.hive3.hive.version>
     <plugin.hive3.hbase.version>2.2.0</plugin.hive3.hbase.version>
-    <plugin.hive3.orc.version>1.5.1-dremio-201909110637480131-cacdb01</plugin.hive3.orc.version>
+    <plugin.hive3.orc.version>1.5.1-dremio-202007271350010286-8131f30</plugin.hive3.orc.version>
     <plugin.hive3.datanucleus-api-jdo.version>4.2.4</plugin.hive3.datanucleus-api-jdo.version>
     <plugin.hive3.datanucleus-core.version>4.1.17</plugin.hive3.datanucleus-core.version>
     <plugin.hive3.datanucleus-rdbms.version>4.1.19</plugin.hive3.datanucleus-rdbms.version>
@@ -107,10 +108,11 @@
     <metrics.version>4.1.0</metrics.version>
     <mariadb.connector.version>2.3.0</mariadb.connector.version>
     <netty.version>4.1.48.Final</netty.version>
+    <netty3.version>3.10.6.Final-nohttp</netty3.version>
     <netty.boringssl.version>2.0.28.Final</netty.boringssl.version>
-    <parquet.version>1.12.0-201905082117230809-0fe4d5d</parquet.version>
+    <parquet.version>1.12.0-202012300655090309-fc8298d</parquet.version>
     <pf4j.version>3.0.1</pf4j.version>
-    <postgresql.version>42.2.5</postgresql.version>
+    <postgresql.version>42.2.18</postgresql.version>
     <protobuf.version>3.9.1</protobuf.version>
     <protostuff.version>1.4.4</protostuff.version>
     <scott-data-hsqldb.version>0.1</scott-data-hsqldb.version>
@@ -118,14 +120,15 @@
     <twill.version>0.14.0</twill.version>
     <zkclient.version>0.10</zkclient.version>
     <zookeeper.version>3.4.14</zookeeper.version>
-    <curator.version>2.12.0</curator.version>
+    <curator.version>4.2.0</curator.version>
+    <curator-test.version>2.12.0</curator-test.version>
     <aws-sdk.version>1.11.761</aws-sdk.version>
-    <aws-sdk-2.version>2.11.11</aws-sdk-2.version>
+    <aws-sdk-2.version>2.11.13</aws-sdk-2.version>
     <openhft-affinity.version>3.1.7</openhft-affinity.version>
     <fbs.version>1.9.0</fbs.version>
     <rocksdb.version>5.14.2</rocksdb.version>
     <opencensus.version>0.24.0</opencensus.version>
-    <grpc.version>1.23.0</grpc.version>
+    <grpc.version>1.30.2</grpc.version>
     <guava.version>28.1-jre</guava.version>
     <guice.version>4.2.2</guice.version>
 
@@ -496,13 +499,15 @@
                     <exclude>org.mortbay.jetty:servlet-api-2.5</exclude>
                     <exclude>org.apache.logging.log4j:log4j-slf4j-impl</exclude>
                     <exclude>log4j:*</exclude>
-                    <exclude>io.netty:*:4.0</exclude> <!-- exclude netty versions 4.0 and above. some of our dependencies (e.g. ES) still depend on netty 3.x which is fine as versions < 4.0 have a completely different package names -->
+                    <exclude>io.netty:*:*</exclude> <!-- exclude all netty versions. The versions needed are explicitly included below. -->
                     <!-- For the sake of space do not include all AWS dependencies but rely on BOM and include individual ones when needed -->
                     <exclude>com.amazonaws:aws-java-sdk</exclude>
                     <exclude>software.amazon.awssdk:aws-sdk-java</exclude>
                   </excludes>
                   <includes>
-                    <include>io.netty:*:${netty.version}</include>
+                    <include>io.netty:*:${netty.version}</include> <!-- include the netty packages that match the version -->
+                    <include>io.netty:netty:${netty3.version}</include> <!-- include 3.10.6.Final version without the http classes, the http classes are deemed insecure -->
+                    <include>io.netty:netty-tcnative-boringssl-static:${netty.boringssl.version}</include>
                   </includes>
                 </bannedDependencies>
                 <bannedPlugins>
@@ -752,12 +757,15 @@ limitations under the License.
             <exclude>**/*.csv</exclude>
             <exclude>**/*.tsv</exclude>
             <exclude>**/*.parquet</exclude>
+            <exclude>**/*.orc</exclude>
             <exclude>**/*.jks</exclude>
             <exclude>**/*.nonformat</exclude>
             <exclude>**/*.gzip</exclude>
             <exclude>**/*.fbs</exclude>
             <exclude>**/*.idx</exclude>
             <exclude>**/*.tpl</exclude>
+            <exclude>**/*.spec.js.snap</exclude>
+            <exclude>**/*.yarnrc</exclude>
 
             <!-- by file name -->
             <exclude>**/Jenkinsfile</exclude>
@@ -781,6 +789,9 @@ limitations under the License.
             <exclude>**/*.no_license</exclude>
             <exclude>**/rpm/conf/dremio-env</exclude>
             <exclude>**/rpm/conf/dremio.conf</exclude>
+            <exclude>**/yarn.lock</exclude>
+            <exclude>**/.env</exclude>
+            <exclude>**/microsoft-logo.svg</exclude>
 
             <!-- by directory name -->
             <exclude>**/node_modules/**</exclude>
@@ -993,7 +1004,7 @@ limitations under the License.
         <plugin>
           <groupId>com.github.eirslett</groupId>
           <artifactId>frontend-maven-plugin</artifactId>
-          <version>1.0</version>
+          <version>1.10.0</version>
 
           <configuration>
             <installDirectory>${project.build.directory}/frontend</installDirectory>
@@ -1372,6 +1383,11 @@ limitations under the License.
       </dependency>
       <dependency>
         <groupId>com.dremio.services</groupId>
+        <artifactId>dremio-services-arrow-flight</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.dremio.services</groupId>
         <artifactId>dremio-services-commandpool</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -1537,7 +1553,7 @@ limitations under the License.
       <dependency>
         <groupId>org.apache.curator</groupId>
         <artifactId>curator-test</artifactId>
-        <version>${curator.version}</version>
+        <version>${curator-test.version}</version>
       </dependency>
       <dependency>
         <groupId>ch.qos.logback</groupId>
@@ -1757,7 +1773,7 @@ limitations under the License.
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty</artifactId>
-        <version>3.10.6.Final</version>
+        <version>${netty3.version}</version>
       </dependency>
       <dependency>
         <groupId>io.netty</groupId>
@@ -1843,7 +1859,12 @@ limitations under the License.
       </dependency>
       <dependency>
         <groupId>org.apache.arrow</groupId>
-        <artifactId>arrow-memory</artifactId>
+        <artifactId>arrow-memory-core</artifactId>
+        <version>${arrow.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.arrow</groupId>
+        <artifactId>arrow-memory-netty</artifactId>
         <version>${arrow.version}</version>
       </dependency>
       <dependency>
@@ -1854,6 +1875,25 @@ limitations under the License.
       <dependency>
         <groupId>org.apache.arrow</groupId>
         <artifactId>flight-core</artifactId>
+        <version>${arrow.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-unix-common</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-kqueue</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.arrow</groupId>
+        <artifactId>flight-grpc</artifactId>
         <version>${arrow.version}</version>
       </dependency>
       <dependency>
@@ -2828,7 +2868,7 @@ limitations under the License.
       <dependency>
         <groupId>org.apache.logging.log4j</groupId>
         <artifactId>log4j-bom</artifactId>
-        <version>2.12.1</version>
+        <version>2.13.3</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -3009,7 +3049,7 @@ limitations under the License.
       <dependency>
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-azure</artifactId>
-        <version>2.8.5-dremio-r2-d1532684d9fd0f51b3451fda22d5f0be503a167c</version>
+        <version>2.8.5-dremio-r2-d65ae5d215c7b9d342ccd1edfb8f42ead358feb9</version>
         <exclusions>
           <exclusion>
             <groupId>org.apache.hadoop</groupId>
@@ -3058,7 +3098,13 @@ limitations under the License.
       <dependency>
         <groupId>com.microsoft.azure</groupId>
         <artifactId>azure-data-lake-store-sdk</artifactId>
-        <version>2.3.3-201901300025380807-2bdda72</version>
+        <version>2.3.3-202004281751280881-379c12c</version>
+        <exclusions>
+          <exclusion>
+            <groupId>org.wildfly.openssl</groupId>
+            <artifactId>wildfly-openssl</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>javax.xml.stream</groupId>

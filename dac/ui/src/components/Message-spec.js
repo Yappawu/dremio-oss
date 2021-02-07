@@ -25,18 +25,34 @@ describe('Message', () => {
     commonProps = {
       message: Immutable.Map({message: 'foo'}),
       messageType: 'warning',
-      messageId: 'id1'
+      messageId: 'id1',
+      moreInfo: 'Please check the log file for details, see https://docs.dremio.com/advanced-administration/log-files.html'
     };
   });
 
   it('renders <div .message>', () => {
-    const wrapper = shallow(<Message {...commonProps}/>);
-
-    expect(wrapper.hasClass('message')).to.be.true;
-    expect(wrapper.hasClass(commonProps.messageType)).to.be.true;
+    const wrapper = mount(<Message {...commonProps}/>);
+    expect(wrapper.find('.message')).to.have.length(1);
     expect(wrapper.find('FontIcon')).to.have.length(2);
     expect(wrapper.find('FontIcon').first().prop('type')).to.be.equal('Warning');
-    expect(wrapper.find('.message-content').text()).to.equal(commonProps.message.get('message'));
+    expect(wrapper.find('.message-content').text()).to.equal(commonProps.message.get('message') + '.');
+  });
+
+  it('should add in hyperlink element for allowed web link found in the message', () => {
+    const firstAllowedUrl = Object.keys(Message.URLS_ALLOWED)[0];
+    const wrapper = mount(<Message {...commonProps} message={`Message with link ${firstAllowedUrl}`}/>);
+    expect(wrapper.find('a')).to.have.length(1);
+  });
+
+  it('should note add in hyperlink element for non-allowed web link found in the message', () => {
+    const link = 'https://www.dremio.com/random_url';
+    const wrapper = mount(<Message {...commonProps} message={`Message with link ${link}`}/>);
+    expect(wrapper.find('a')).to.have.length(0);
+  });
+
+  it('should not add in hyperlink if the message does not contain any web link', () => {
+    const wrapper = mount(<Message {...commonProps} message={'simple message'}/>);
+    expect(wrapper.find('a')).to.have.length(0);
   });
 
   it('should not render when dismissed', () => {
@@ -105,11 +121,11 @@ describe('Message', () => {
     });
     it('should return message from Map', function() {
       const instance = shallow(<Message {...commonProps}/>).instance();
-      expect(instance.renderErrorMessageText()).to.eql('foo');
+      expect(instance.renderErrorMessageText()).to.eql('foo.');
     });
     it('should return legacy message from Map', function() {
       const instance = shallow(<Message {...commonProps} message={Immutable.Map({errorMessage: 'foo'})}/>).instance();
-      expect(instance.renderErrorMessageText()).to.eql('foo');
+      expect(instance.renderErrorMessageText()).to.eql('foo.');
     });
     it('should return renderMessageForCode over #message', function() {
       // use PIPELINE_FAILURE as a canary
@@ -121,7 +137,6 @@ describe('Message', () => {
         <span>{la('There was an error in the Reflection pipeline.')}</span>
       );
     });
-
   });
 
   describe('#renderDetails', function() {

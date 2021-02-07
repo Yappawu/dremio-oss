@@ -15,6 +15,7 @@
  */
 package com.dremio.dac.service;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -42,6 +43,8 @@ import com.dremio.dac.model.sources.SourceUI;
 import com.dremio.dac.model.sources.UIMetadataPolicy;
 import com.dremio.dac.server.BaseTestServer;
 import com.dremio.dac.util.JSONUtil;
+import com.dremio.exec.ExecConstants;
+import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.proto.UserBitShared;
 import com.dremio.exec.store.CatalogService;
 import com.dremio.exec.store.dfs.NASConf;
@@ -50,12 +53,16 @@ import com.dremio.service.job.JobDetailsRequest;
 import com.dremio.service.job.JobSummary;
 import com.dremio.service.job.JobSummaryRequest;
 import com.dremio.service.job.proto.JobAttempt;
+import com.dremio.service.job.proto.JobFailureInfo;
 import com.dremio.service.job.proto.JobId;
+import com.dremio.service.job.proto.JobInfo;
+import com.dremio.service.job.proto.JobProtobuf;
 import com.dremio.service.job.proto.JobResult;
 import com.dremio.service.job.proto.JobState;
 import com.dremio.service.job.proto.QueryType;
 import com.dremio.service.jobs.JobDataClientUtils;
 import com.dremio.service.jobs.JobDataFragment;
+import com.dremio.service.jobs.JobNotFoundException;
 import com.dremio.service.jobs.JobRequest;
 import com.dremio.service.jobs.JobResultsStore;
 import com.dremio.service.jobs.JobsProtoUtil;
@@ -82,6 +89,8 @@ public class TestJobResultsStore extends BaseTestServer {
 
   private BufferAllocator allocator;
 
+  private int sqlLimit = 2_000_000;
+
   @Before
   public void setup() throws Exception {
     clearAllDataExceptUser();
@@ -91,6 +100,153 @@ public class TestJobResultsStore extends BaseTestServer {
   @After
   public void cleanup() {
     allocator.close();
+  }
+
+  /**
+   * Are UI query results honoring offset and limit properly ?
+   * Are actual results same as expected results ?
+   */
+  @Test
+  public void testResultsHonoringOffsetLimit() throws Exception {
+    SqlQuery sqlQuery = getQueryFromSQL("select * from cp.\"datasets/5000rows/5000rows.parquet\" LIMIT 5000");
+    final JobId jobId = submitJobAndWaitUntilCompletion(
+      JobRequest.newBuilder()
+                .setSqlQuery(sqlQuery)
+                .setQueryType(QueryType.UI_RUN)
+                .build()
+    );
+
+    int[] offsets = new int[]      {   0,   0, 3967, 3968, 3968};
+    int[] limits = new int[]       {5000, 100,  100,  100, 6000};
+    int[] expectedRows = new int[] {5000, 100,  100,  100, 1032};
+
+    for(int i=0;i<offsets.length; i++) {
+      fetchValidateResultsAtOffset(jobId, offsets[i], limits[i], expectedRows[i]);
+    }
+  }
+
+  private void fetchValidateResultsAtOffset(JobId jobId, int offset, int limit, int expectedRows) throws JobNotFoundException {
+    try (
+      JobDataFragment expectedResult = l(LocalJobsService.class).getJobData(jobId, offset, limit);
+      JobDataFragment actualResult = JobDataClientUtils.getJobData(l(JobsService.class), allocator, jobId, offset, limit);
+    ) {
+      assertEquals("Number of records received are incorrect for offset:" + offset + ", limit:" + limit,
+                   expectedRows,
+                   actualResult.getReturnedRowCount());
+      validateResults(expectedResult, actualResult);
+    }
+  }
+
+  /**
+   * Are UI query results honoring offset and limit properly ?
+   * Are actual results same as expected results ?
+   * This unit test tests when results are stored in multiple arrow files
+   * and offset and limit spans multiple arrow files.
+   */
+  @Test
+  public void testResultsHonoringOffsetLimitMultipleArrowFiles() throws Exception {
+    SqlQuery sqlQuery = getQueryFromSQL("SELECT * " +
+                                        "FROM      cp.\"datasets/parquet_offset/offset1.parquet\" a " +
+                                        "FULL JOIN cp.\"datasets/parquet_offset/offset2.parquet\" b " +
+                                        "ON a.column1 = b.column1 LIMIT " + 3_000_000);
+
+    // There are 5 fragments for above query, so setting MAX_WIDTH_PER_NODE_KEY to 5.
+    // This is reset at end of this method.
+    setSystemOption(ExecConstants.MAX_WIDTH_PER_NODE_KEY, "5");
+    try {
+      final JobId jobId = submitJobAndWaitUntilCompletion(
+        JobRequest.newBuilder()
+          .setSqlQuery(sqlQuery)
+          .setQueryType(QueryType.REST)
+          .build()
+      );
+
+      int[] offsets = new int[]      {2007785};
+      int[] limits = new int[]       {    500};
+      int[] expectedRows = new int[] {    500};
+
+      for (int i = 0; i < offsets.length; i++) {
+        fetchValidateResultsAtOffset(jobId, offsets[i], limits[i], expectedRows[i]);
+      }
+    } finally {
+      resetSystemOption(ExecConstants.MAX_WIDTH_PER_NODE_KEY);
+    }
+  }
+
+  /**
+   * Test truncation of results for UI query having no limit clause
+   * with PlannerSettings.OUTPUT_LIMIT_SIZE option value changed to depict
+   * the scenario where user changed the value.
+   * @throws Exception
+   */
+  @Test
+  public void testTruncateResultsUIQueryWithOutputLimitChanged() throws Exception {
+    try {
+      // Changing value of PlannerSettings.OUTPUT_LIMIT_SIZE to depict user changed the value.
+      // This is reset at end of this method.
+      setSystemOption(PlannerSettings.OUTPUT_LIMIT_SIZE.getOptionName(), "" + 200_000L);
+      testTruncateResults(QueryType.UI_RUN, "", 130_944);
+    } finally {
+      resetSystemOption(PlannerSettings.OUTPUT_LIMIT_SIZE.getOptionName());
+    }
+  }
+
+  /**
+   * Test truncation of results for UI query having no limit clause
+   * @throws Exception
+   */
+  @Test
+  public void testTruncateResultsUIQueryWithNoLimitClause() throws Exception {
+    testTruncateResults(QueryType.UI_RUN, "" , 607_104);
+  }
+
+  /**
+   * Test truncation of results for UI query having limit clause
+   * @throws Exception
+   */
+  @Test
+  public void testTruncateResultsUIQueryWithLimitClause() throws Exception {
+    testTruncateResults(QueryType.UI_RUN, "LIMIT " + sqlLimit, 1_003_904);
+  }
+
+  /**
+   * Feature for truncation of results for UI query should not truncate results for REST query.
+   * @throws Exception
+   */
+  @Test
+  public void testTruncateResultsRESTQuery() throws Exception {
+    testTruncateResults(QueryType.REST, "LIMIT " + sqlLimit, sqlLimit);
+  }
+
+  private void testTruncateResults(QueryType queryType, String limitClause, int expectedNumRecords) throws Exception {
+    SqlQuery sqlQuery = getQueryFromSQL("SELECT * " +
+                                        "FROM      cp.\"datasets/parquet_offset/offset1.parquet\" a " +
+                                        "FULL JOIN cp.\"datasets/parquet_offset/offset2.parquet\" b " +
+                                        "ON a.column1 = b.column1 " + limitClause);
+
+    // There are 5 fragments for above query, so setting MAX_WIDTH_PER_NODE_KEY to 5.
+    // This is reset at end of this method.
+    setSystemOption(ExecConstants.MAX_WIDTH_PER_NODE_KEY, "5");
+    try {
+      final JobId jobId = submitJobAndWaitUntilCompletion(JobRequest.newBuilder()
+                                                                    .setSqlQuery(sqlQuery)
+                                                                    .setQueryType(queryType)
+                                                                    .build());
+
+      JobDetailsRequest jobDetailsRequest =  JobDetailsRequest.newBuilder()
+                                                              .setJobId(JobsProtoUtil.toBuf(jobId))
+                                                              .setUserName(SystemUser.SYSTEM_USERNAME)
+                                                              .build();
+
+      JobDetails jobDetails = l(JobsService.class).getJobDetails(jobDetailsRequest);
+      JobProtobuf.JobAttempt jobAttempt = jobDetails.getAttempts(jobDetails.getAttemptsCount()-1);
+      assertEquals("Expected num of records does not match.", expectedNumRecords, jobAttempt.getStats().getOutputRecords());
+
+      // Fetch last 500 records to verify that there is no truncation of results while fetching stored results.
+      fetchValidateResultsAtOffset(jobId, expectedNumRecords-500, 500, 500);
+    } finally {
+      resetSystemOption(ExecConstants.MAX_WIDTH_PER_NODE_KEY);
+    }
   }
 
   @Test
@@ -105,30 +261,37 @@ public class TestJobResultsStore extends BaseTestServer {
         .setDatasetVersion(new DatasetVersion("1"))
         .build()
     );
-    JobDataFragment storedResult = l(LocalJobsService.class).getJobData(jobId, 0, 10);
-    try (final JobDataFragment result = JobDataClientUtils.getJobData(jobsService, allocator, jobId, 0, 10)) {
-      for (Field column: result.getSchema()) {
-        assertTrue(storedResult.getSchema().getFields().contains(column));
-      }
-      for (int i=0; i<result.getReturnedRowCount(); i++) {
-        boolean found = false;
-        List<Object> valuesFromResult = new ArrayList<>();
-        for(Field c : result.getSchema()) {
-          valuesFromResult.add(result.extractValue(c.getName(), i));
-        }
+    try (
+      final JobDataFragment storedResult = l(LocalJobsService.class).getJobData(jobId, 0, 10);
+      final JobDataFragment result = JobDataClientUtils.getJobData(jobsService, allocator, jobId, 0, 10)) {
+      validateResults(storedResult, result);
+    }
+  }
 
-        for (int j=0; j<storedResult.getReturnedRowCount(); j++) {
-          List<Object> valuesFromStored = new ArrayList<>();
-          for(Field c : storedResult.getSchema()) {
-            valuesFromStored.add(storedResult.extractValue(c.getName(), j));
-          }
-          if (valuesFromResult.equals(valuesFromStored)) {
-            found = true;
-            break;
-          }
-        }
-        assertTrue("Missing row numbered [" + i + "] from " + JSONUtil.toString(new JobDataFragmentWrapper(0, storedResult)), found);
+  private void validateResults(JobDataFragment expectedResult,
+                               JobDataFragment actualResult) {
+    for (Field column: actualResult.getSchema()) {
+      assertTrue(expectedResult.getSchema().getFields().contains(column));
+    }
+    for (int i=0; i<actualResult.getReturnedRowCount(); i++) {
+      boolean found = false;
+      List<Object> valuesFromResult = new ArrayList<>();
+      for(Field c : actualResult.getSchema()) {
+        valuesFromResult.add(actualResult.extractValue(c.getName(), i));
       }
+
+      for (int j = 0; j< expectedResult.getReturnedRowCount(); j++) {
+        List<Object> valuesFromStored = new ArrayList<>();
+        for(Field c : expectedResult.getSchema()) {
+          valuesFromStored.add(expectedResult.extractValue(c.getName(), j));
+        }
+        if (valuesFromResult.equals(valuesFromStored)) {
+          found = true;
+          break;
+        }
+      }
+      assertTrue("Missing row numbered [" + i + "] from " + JSONUtil.toString(new JobDataFragmentWrapper(0,
+                                                                                                         expectedResult)), found);
     }
   }
 
@@ -146,6 +309,39 @@ public class TestJobResultsStore extends BaseTestServer {
     jobResult.setAttemptsList(attempts);
     when(jobResultsStore.loadJobData(new JobId("Canceled Job"),jobResult,0,0)).thenCallRealMethod();
     jobResultsStore.loadJobData(new JobId("Canceled Job"),jobResult,0,0);
+  }
+
+  /**
+   * Test fetching of job data (JobResultsStore#loadJobData()) in case of query failure during execution.
+   */
+  @Test
+  public void testLoadJobDataOfFailedQuery() {
+    String failureMessage = "job failed";
+    exception.expect(new UserExceptionMatcher(UserBitShared.DremioPBError.ErrorType.DATA_READ,
+                     failureMessage));
+
+    final JobResultsStore jobResultsStore = mock(JobResultsStore.class);
+    JobFailureInfo.Error error = new JobFailureInfo.Error();
+    error.setMessage(failureMessage);
+
+    JobFailureInfo detailedFailureInfo = new JobFailureInfo();
+    detailedFailureInfo.setErrorsList(Arrays.asList(error));
+
+    JobInfo jobInfo = new JobInfo();
+    jobInfo.setDetailedFailureInfo(detailedFailureInfo);
+
+    JobAttempt jobAttempt = new JobAttempt();
+    jobAttempt.setState(JobState.FAILED);
+    jobAttempt.setInfo(jobInfo);
+
+    List<JobAttempt> attempts = new ArrayList<>();
+    attempts.add(jobAttempt);
+
+    JobResult jobResult = new JobResult();
+    jobResult.setAttemptsList(attempts);
+
+    when(jobResultsStore.loadJobData(new JobId("Failed JobID"),jobResult,0,0)).thenCallRealMethod();
+    jobResultsStore.loadJobData(new JobId("Failed JobID"),jobResult,0,0);
   }
 
   @Test

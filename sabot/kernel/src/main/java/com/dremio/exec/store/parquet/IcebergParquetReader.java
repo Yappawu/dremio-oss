@@ -23,7 +23,6 @@ import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.schema.Type;
 
 import com.dremio.common.AutoCloseables;
@@ -35,6 +34,7 @@ import com.dremio.exec.expr.TypeHelper;
 import com.dremio.exec.planner.physical.visitor.GlobalDictionaryFieldInfo;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.store.RecordReader;
+import com.dremio.exec.store.RuntimeFilter;
 import com.dremio.exec.store.SampleMutator;
 import com.dremio.io.file.FileSystem;
 import com.dremio.sabot.exec.context.OperatorContext;
@@ -57,7 +57,7 @@ public class IcebergParquetReader implements RecordReader {
   private final List<ParquetFilterCondition> filterConditions;
   private final ParquetProtobuf.ParquetDatasetSplitScanXAttr readEntry;
   private final FileSystem fs;
-  private final ParquetMetadata footer;
+  private final MutableParquetMetadata footer;
   private final GlobalDictionaries dictionaries;
   private final SchemaDerivationHelper schemaHelper;
   private final boolean vectorize;
@@ -75,7 +75,7 @@ public class IcebergParquetReader implements RecordReader {
     List<ParquetFilterCondition> filterConditions,
     ParquetProtobuf.ParquetDatasetSplitScanXAttr readEntry,
     FileSystem fs,
-    ParquetMetadata footer,
+    MutableParquetMetadata footer,
     GlobalDictionaries dictionaries,
     SchemaDerivationHelper schemaHelper,
     boolean vectorize,
@@ -150,7 +150,7 @@ public class IcebergParquetReader implements RecordReader {
       projectedColumns,
       this.globalDictionaryFieldInfoMap,
       this.filterConditions,
-      readerFactory.newFilterCreator(ParquetReaderFactory.ManagedSchemaType.ICEBERG, null),
+      readerFactory.newFilterCreator(context, ParquetReaderFactory.ManagedSchemaType.ICEBERG, null, context.getAllocator()),
       ParquetDictionaryConvertor.DEFAULT,
       this.readEntry,
       fs,
@@ -160,8 +160,8 @@ public class IcebergParquetReader implements RecordReader {
       vectorize,
       enableDetailedTracing,
       supportsColocatedReads,
-      inputStreamProvider
-    );
+      inputStreamProvider,
+      new ArrayList<>());
     currentReader.setIgnoreSchemaLearning(true);
     currentReader.setup(output);
   }
@@ -181,6 +181,13 @@ public class IcebergParquetReader implements RecordReader {
     }
 
     return currentReader.next();
+  }
+
+  @Override
+  public void addRuntimeFilter(RuntimeFilter runtimeFilter) {
+    if (runtimeFilter != null) {
+      this.currentReader.addRuntimeFilter(runtimeFilter);
+    }
   }
 
   @Override

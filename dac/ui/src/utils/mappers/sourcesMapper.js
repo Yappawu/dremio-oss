@@ -43,6 +43,10 @@ class SourcesMapper {
       info.config.secretResourceUrl = '';
     } else if (info.config.authenticationType === 'SECRET') {
       info.config.authenticationType = 'MASTER';
+    } else if (info.config.authenticationType === 'KERBEROS') {
+      info.config.useKerberos = true;
+      info.config.username = null;
+      info.config.password = null;
     }
     return {...info, type: sourceType};
   }

@@ -34,17 +34,22 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.annotation.Nullable;
 import javax.inject.Provider;
 
 import org.apache.arrow.memory.BufferAllocator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.dremio.common.AutoCloseables;
 import com.dremio.common.WakeupHandler;
@@ -66,10 +71,9 @@ import com.dremio.exec.proto.UserBitShared;
 import com.dremio.exec.server.MaterializationDescriptorProvider;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.server.options.SessionOptionManagerImpl;
-import com.dremio.exec.server.options.SystemOptionManager;
 import com.dremio.exec.store.CatalogService;
+import com.dremio.exec.store.dfs.FileSystemPlugin;
 import com.dremio.exec.store.sys.accel.AccelerationListManager;
-import com.dremio.exec.store.sys.accel.AccelerationManager;
 import com.dremio.exec.store.sys.accel.AccelerationManager.ExcludedReflectionsProvider;
 import com.dremio.options.OptionManager;
 import com.dremio.options.OptionValue;
@@ -77,8 +81,11 @@ import com.dremio.sabot.rpc.user.UserSession;
 import com.dremio.service.jobs.JobsService;
 import com.dremio.service.namespace.NamespaceException;
 import com.dremio.service.namespace.NamespaceKey;
+import com.dremio.service.namespace.NamespaceNotFoundException;
 import com.dremio.service.namespace.NamespaceService;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
+import com.dremio.service.namespace.dataset.proto.DatasetType;
+import com.dremio.service.namespace.dataset.proto.RefreshMethod;
 import com.dremio.service.reflection.MaterializationCache.CacheException;
 import com.dremio.service.reflection.MaterializationCache.CacheHelper;
 import com.dremio.service.reflection.MaterializationCache.CacheViewer;
@@ -91,12 +98,15 @@ import com.dremio.service.reflection.proto.Materialization;
 import com.dremio.service.reflection.proto.MaterializationId;
 import com.dremio.service.reflection.proto.MaterializationMetrics;
 import com.dremio.service.reflection.proto.ReflectionEntry;
+import com.dremio.service.reflection.proto.ReflectionField;
 import com.dremio.service.reflection.proto.ReflectionGoal;
 import com.dremio.service.reflection.proto.ReflectionGoalState;
 import com.dremio.service.reflection.proto.ReflectionId;
+import com.dremio.service.reflection.proto.ReflectionType;
 import com.dremio.service.reflection.proto.Refresh;
 import com.dremio.service.reflection.proto.RefreshRequest;
 import com.dremio.service.reflection.refresh.RefreshHelper;
+import com.dremio.service.reflection.refresh.RefreshStartHandler;
 import com.dremio.service.reflection.store.DependenciesStore;
 import com.dremio.service.reflection.store.ExternalReflectionStore;
 import com.dremio.service.reflection.store.MaterializationStore;
@@ -122,7 +132,7 @@ import com.google.common.collect.Sets;
  * {@link ReflectionService} implementation
  */
 public class ReflectionServiceImpl extends BaseReflectionService {
-  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ReflectionServiceImpl.class);
+  private static final Logger logger = LoggerFactory.getLogger(ReflectionServiceImpl.class);
 
   public static final String LOCAL_TASK_LEADER_NAME = "reflectionsrefresh";
 
@@ -151,7 +161,6 @@ public class ReflectionServiceImpl extends BaseReflectionService {
   }
 
   private MaterializationDescriptorProvider materializationDescriptorProvider;
-  private AccelerationManager accelerationManager;
   private final Provider<SchedulerService> schedulerService;
   private final Provider<JobsService> jobsService;
   private final Provider<NamespaceService> namespaceService;
@@ -191,6 +200,8 @@ public class ReflectionServiceImpl extends BaseReflectionService {
   private final ReflectionValidator validator;
 
   private final MaterializationDescriptorFactory materializationDescriptorFactory;
+
+  private ReflectionManager reflectionManager = null;
 
   public ReflectionServiceImpl(
     SabotConfig config,
@@ -251,10 +262,6 @@ public class ReflectionServiceImpl extends BaseReflectionService {
 
   public MaterializationDescriptorProvider getMaterializationDescriptor() {
     return materializationDescriptorProvider;
-  }
-
-  public AccelerationManager getAccelerationManager() {
-    return accelerationManager;
   }
 
   @Override
@@ -324,8 +331,6 @@ public class ReflectionServiceImpl extends BaseReflectionService {
       );
     }
 
-    this.accelerationManager = new AccelerationManagerImpl(this, namespaceService.get());
-
     scheduleNextCacheRefresh(new CacheRefresher());
   }
 
@@ -352,7 +357,10 @@ public class ReflectionServiceImpl extends BaseReflectionService {
     dependencyManager = new DependencyManager(reflectionSettings, materializationStore, internalStore, requestsStore, dependenciesStore);
     dependencyManager.start();
 
-    final ReflectionManager manager = new ReflectionManager(
+    final FileSystemPlugin accelerationPlugin = sabotContext.get().getCatalogService()
+      .getSource(ReflectionServiceImpl.ACCELERATOR_STORAGEPLUGIN_NAME);
+
+    this.reflectionManager = new ReflectionManager(
       sabotContext.get(),
       jobsService.get(),
       namespaceService.get(),
@@ -364,15 +372,29 @@ public class ReflectionServiceImpl extends BaseReflectionService {
       dependencyManager,
       new DescriptorCacheImpl(),
       reflectionsToUpdate,
-      new ReflectionManager.WakeUpCallback() {
-        @Override
-        public void wakeup(String reason) {
-          wakeupManager(reason);
-        }
-      },
+      this::wakeupManager,
       expansionHelper,
-      allocator);
-    wakeupHandler = new WakeupHandler(executorService, manager);
+      allocator,
+      accelerationPlugin.getConfig().getPath(),
+      ReflectionGoalChecker.Instance,
+      new RefreshStartHandler(
+        namespaceService.get(),
+        jobsService.get(),
+        materializationStore,
+        this::wakeupManager
+      )
+    );
+
+    wakeupHandler = new WakeupHandler(executorService, reflectionManager);
+  }
+
+  @Override
+  public void updateAccelerationBasePath() {
+    if (reflectionManager != null) {
+      final FileSystemPlugin accelerationPlugin = sabotContext.get().getCatalogService()
+        .getSource(ReflectionServiceImpl.ACCELERATOR_STORAGEPLUGIN_NAME);
+      reflectionManager.setAccelerationBasePath(accelerationPlugin.getConfig().getPath());
+    }
   }
 
   public RefreshHelper getRefreshHelper() {
@@ -406,7 +428,7 @@ public class ReflectionServiceImpl extends BaseReflectionService {
   }
 
   @VisibleForTesting
-  void refreshCache() {
+  public void refreshCache() {
     if (isCacheEnabled()) {
       logger.debug("materialization cache refresh...");
       materializationCache.refresh();
@@ -422,7 +444,7 @@ public class ReflectionServiceImpl extends BaseReflectionService {
       .setUserName(SYSTEM_USERNAME)
       .build();
     return UserSession.Builder.newBuilder()
-      .withSessionOptionManager(new SessionOptionManagerImpl(options))
+      .withSessionOptionManager(new SessionOptionManagerImpl(options.getOptionValidatorListing()), options)
       .withCredentials(credentials)
       .exposeInternalSources(true)
       .build();
@@ -497,9 +519,9 @@ public class ReflectionServiceImpl extends BaseReflectionService {
         .setId(id.getId())
         .setName(name)
         .setQueryDatasetId(datasetConfig.getId().getId())
-        .setQueryDatasetHash(computeDatasetHash(datasetConfig, namespaceService.get()))
+        .setQueryDatasetHash(computeDatasetHash(datasetConfig, namespaceService.get(), true))
         .setTargetDatasetId(targetDatasetConfig.getId().getId())
-        .setTargetDatasetHash(computeDatasetHash(targetDatasetConfig, namespaceService.get()));
+        .setTargetDatasetHash(computeDatasetHash(targetDatasetConfig, namespaceService.get(), true));
 
       // check that we are able to get a MaterializationDescriptor before storing it
       MaterializationDescriptor descriptor = ReflectionUtils.getMaterializationDescriptor(externalReflection, namespaceService.get());
@@ -798,7 +820,26 @@ public class ReflectionServiceImpl extends BaseReflectionService {
     };
   }
 
-  private SystemOptionManager getOptionManager() {
+  @Override
+  public long getReflectionSize(ReflectionId reflectionId) {
+    if (doesReflectionHaveAnyMaterializationDone(reflectionId)) {
+      return getMetrics(getLastDoneMaterialization(reflectionId)).getFootprint();
+    }
+
+    return -1;
+  }
+
+  @Override
+  public boolean isReflectionIncremental(ReflectionId reflectionId) {
+    Optional<ReflectionEntry> entry = getEntry(reflectionId);
+    if (entry.isPresent()) {
+      return entry.get().getRefreshMethod() == RefreshMethod.INCREMENTAL;
+    }
+
+    return false;
+  }
+
+  private OptionManager getOptionManager() {
     return sabotContext.get().getOptionManager();
   }
 
@@ -812,7 +853,7 @@ public class ReflectionServiceImpl extends BaseReflectionService {
 
   private MaterializationDescriptor getDescriptor(Materialization materialization) throws CacheException {
     final ReflectionGoal goal = userStore.get(materialization.getReflectionId());
-    if (!ReflectionGoalsStore.checkGoalVersion(goal, materialization.getReflectionGoalVersion())) {
+    if (!ReflectionGoalChecker.checkGoal(goal, materialization)) {
       // reflection goal changed and corresponding materialization is no longer valid
       throw new CacheException("Unable to expand materialization " + materialization.getId().getId() +
         " as it no longer matches its reflection goal");
@@ -913,6 +954,79 @@ public class ReflectionServiceImpl extends BaseReflectionService {
         })
         .toList();
     }
+
+    private boolean isDefaultReflectionEnabled(NamespaceKey path) {
+      try {
+        DatasetConfig datasetConfig = namespaceService.get().getDataset(path);
+        if (!datasetConfig.getType().equals(DatasetType.VIRTUAL_DATASET) || datasetConfig.getVirtualDataset() == null) {
+          return false;
+        }
+        return Optional.fromNullable(datasetConfig.getVirtualDataset().getDefaultReflectionEnabled()).or(true);
+      } catch (NamespaceException e) {
+        logger.debug("Dataset {} not found", path);
+        return false;
+      }
+    }
+
+    @Override
+    public java.util.Optional<MaterializationDescriptor> getDefaultRawMaterialization(NamespaceKey path, List<String> vdsFields) {
+      if (isSubstitutionEnabled()) {
+        try {
+          for (ReflectionGoal goal : getReflectionsByDatasetPath(path)) {
+            if (goal.getType() == ReflectionType.RAW) {
+              List<String> displayFields = goal.getDetails().getDisplayFieldList().stream().map(ReflectionField::getName).sorted().collect(Collectors.toList());
+              if (displayFields.equals(vdsFields)) {
+                final long currentTime = System.currentTimeMillis();
+                final Set<String> activeHosts = getActiveHosts();
+                Set<CachedMaterializationDescriptor> expandedMaterializations;
+                Stream<Materialization> materializationStream = Stream.of(materializationStore.getLastMaterializationDone(goal.getId()))
+                  .filter(Objects::nonNull)
+                  .filter((Predicate<Materialization>) m -> !Iterables.isEmpty(materializationStore.getRefreshes(m)))
+                  .filter(m -> !hasMissingPartitions(m.getPartitionList(), activeHosts));
+                if (isCacheEnabled()) {
+                  expandedMaterializations = materializationStream.map(m -> (CachedMaterializationDescriptor) materializationCache.get(m.getId()))
+                    .filter(Objects::nonNull)
+                    .filter((Predicate<MaterializationDescriptor>) descriptor -> descriptor.getExpirationTimestamp() > currentTime && activeHosts.containsAll(descriptor.getPartition()))
+                    .collect(Collectors.toSet());
+                } else {
+                  expandedMaterializations = materializationStream.map((Function<Materialization, CachedMaterializationDescriptor>) m -> {
+                    try {
+                      return cacheHelper.expand(m);
+                    } catch (Exception e) {
+                      logger.warn("Couldn't expand materialization {}", m.getId().getId(), e);
+                      return null;
+                    }
+                  })
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+                }
+                if (!expandedMaterializations.isEmpty()) {
+                  // We expect the feature to be enabled in the majority of cases. So we want to wait until
+                  // we know that there are default reflections available for the dataset. This way we avoid
+                  // hitting the namspace for every dataset in the tree, even if the dataset doesn't have any
+                  // reflections
+                  if (!isDefaultReflectionEnabled(path)) {
+                    return java.util.Optional.empty();
+                  }
+                  CachedMaterializationDescriptor desc = expandedMaterializations.iterator().next();
+                  if (!(desc.getMaterialization().getIncrementalUpdateSettings().isIncremental() && desc.getMaterialization().hasAgg())) {
+                    // Do not apply default reflections for incremental refresh if there is an agg in the query plan
+                    return java.util.Optional.of(desc);
+                  }
+                }
+              }
+            }
+          }
+        } catch (Exception ex) {
+          if (ex.getCause() instanceof NamespaceNotFoundException) {
+            logger.debug("Error while expanding view with path {}: {}", path, ex.getMessage());
+          } else {
+            Throwables.propagate(ex);
+          }
+        }
+      }
+      return java.util.Optional.empty();
+    }
   }
 
   private final class CacheHelperImpl implements CacheHelper {
@@ -994,6 +1108,14 @@ public class ReflectionServiceImpl extends BaseReflectionService {
       wakeupManager("failed to expand materialization"); // we should wake up the manager to update the reflection
       return null;
     }
+  }
+
+  public void resetCache() {
+    materializationCache.resetCache();
+  }
+
+  public ReflectionManager getReflectionManager() {
+    return reflectionManager;
   }
 
   private final class DescriptorCacheImpl implements DescriptorCache {

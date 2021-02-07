@@ -19,7 +19,9 @@ package com.dremio.common.util;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.function.Function;
 
+import org.apache.arrow.util.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +32,7 @@ import com.dremio.io.ExponentialBackoff;
  *
  * @param <T>
  */
-public final class Retryer<T> extends ExponentialBackoff {
+public class Retryer<T> implements ExponentialBackoff {
   private static Logger logger = LoggerFactory.getLogger(Retryer.class);
 
   public enum WaitStrategy {EXPONENTIAL, FLAT}  //Can be extended
@@ -74,18 +76,23 @@ public final class Retryer<T> extends ExponentialBackoff {
   }
 
   @Override
-  protected int getBaseMillis() {
+  public int getBaseMillis() {
     return baseMillis;
   }
 
   @Override
-  protected int getMaxMillis() {
+  public int getMaxMillis() {
     return maxMillis;
   }
 
   private void flatWait() {
+    sleep(baseMillis);
+  }
+
+  @VisibleForTesting
+  void sleep(long millis) {
     try {
-      Thread.sleep(baseMillis);
+      Thread.sleep(millis);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
@@ -123,6 +130,10 @@ public final class Retryer<T> extends ExponentialBackoff {
 
     OperationFailedAfterRetriesException(Exception e) {
       super(e);
+    }
+
+    public <T extends Exception> T getWrappedCause(Class<T> clazz, Function<Throwable, T> conversionFunc) {
+      return clazz.isInstance(getCause()) ? (T)getCause() : conversionFunc.apply(getCause());
     }
   }
 }

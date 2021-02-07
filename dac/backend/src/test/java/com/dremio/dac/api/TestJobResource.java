@@ -113,19 +113,21 @@ public class TestJobResource extends BaseTestServer {
     ).getId();
 
     expectSuccess(getBuilder(getPublicAPI(3).path(JOB_PATH).path(id).path("cancel")).buildPost(null));
+    String cancelReason = "Query cancelled by user 'dremio'";
 
     while (true) {
       JobStatus status = expectSuccess(getBuilder(getPublicAPI(3).path(JOB_PATH).path(id)).buildGet(), JobStatus.class);
       JobState jobState = status.getJobState();
 
-      Assert.assertTrue("expected job to cancel successfully",
+      Assert.assertTrue("Job is expected to be canceled eventually. But job is in unexpected jobState:" + jobState,
         Arrays
-          .asList(JobState.PLANNING, JobState.RUNNING, JobState.ENQUEUED, JobState.STARTING, JobState.CANCELLATION_REQUESTED, JobState.CANCELED)
+          .asList(JobState.PLANNING, JobState.RUNNING, JobState.STARTING, JobState.CANCELED, JobState.PENDING,
+            JobState.METADATA_RETRIEVAL, JobState.QUEUED, JobState.ENGINE_START, JobState.EXECUTION_PLANNING)
           .contains(jobState));
 
       if (jobState == JobState.CANCELED) {
         expectStatus(Response.Status.BAD_REQUEST, getBuilder(getPublicAPI(3).path(JOB_PATH).path(id).path("results").queryParam("limit", 1000)).buildGet());
-        assertEquals("Query cancelled by user 'dremio'", status.getCancellationReason());
+        assertEquals(cancelReason, status.getCancellationReason());
         break;
       } else if (jobState == JobState.COMPLETED) {
         // the job could complete before the cancel request, so make sure the test doesn't fail in that case.

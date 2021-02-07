@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.arrow.memory.AllocationListener;
 import org.apache.arrow.memory.AllocationReservation;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.BufferManager;
 import org.apache.arrow.memory.OutOfMemoryException;
@@ -38,9 +39,6 @@ import com.dremio.sabot.exec.context.BufferManagerImpl;
 import com.dremio.sabot.op.copier.Copier;
 import com.dremio.sabot.op.copier.CopierOperator;
 import com.dremio.sabot.op.sort.external.Sv4HyperContainer;
-
-import io.netty.buffer.ArrowBuf;
-import io.netty.buffer.ByteBufAllocator;
 
 public class TestCopiers extends BaseTestOperator {
   static final int targetBatchSize = 1023;
@@ -148,11 +146,6 @@ public class TestCopiers extends BaseTestOperator {
     }
 
     @Override
-    public ByteBufAllocator getAsByteBufAllocator() {
-      return actual.getAsByteBufAllocator();
-    }
-
-    @Override
     public BufferAllocator newChildAllocator(String s, long l, long l1) {
       return actual.newChildAllocator(s, l, l1);
     }
@@ -234,5 +227,25 @@ public class TestCopiers extends BaseTestOperator {
 
     @Override
     public void assertOpen() { actual.assertOpen(); }
+
+    @Override
+    public AllocationListener getListener() {
+      return actual.getListener();
+    }
+
+    @Override
+    public void releaseBytes(long size) {
+      actual.releaseBytes(size);
+    }
+
+    @Override
+    public boolean forceAllocate(long size) {
+      return actual.forceAllocate(size);
+    }
+
+    @Override
+    public BufferAllocator getRoot() {
+      return actual.getRoot();
+    }
   }
 }

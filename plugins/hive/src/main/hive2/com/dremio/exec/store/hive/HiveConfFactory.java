@@ -43,7 +43,16 @@ public class HiveConfFactory {
 
   // S3 Hadoop file system implementation
   private static final String FS_S3_IMPL = "fs.s3.impl";
+  private static final String FS_S3N_IMPL = "fs.s3n.impl";
   private static final String FS_S3_IMPL_DEFAULT = "org.apache.hadoop.fs.s3a.S3AFileSystem";
+
+  private static final String FS_S3_MAXIMUM_CONNECTIONS = "fs.s3a.connection.maximum";
+  private static final String FS_S3_FAST_UPLOAD = "fs.s3a.fast.upload";
+  private static final String FS_S3_FAST_UPLOAD_BUFFER = "fs.s3a.fast.upload.buffer";
+  private static final String FS_S3_FAST_UPLOAD_ACTIVE_BLOCKS = "fs.s3a.fast.upload.active.blocks";
+  private static final String FS_S3_MAX_THREADS = "fs.s3a.threads.max";
+  private static final String FS_S3_MULTIPART_SIZE = "fs.s3a.multipart.size";
+  private static final String FS_S3_MAX_TOTAL_TASKS = "fs.s3a.max.total.tasks";
 
   // ADL Hadoop file system implementation
   private static final ImmutableMap<String, String> ADL_PROPS = ImmutableMap.of(
@@ -116,8 +125,19 @@ public class HiveConfFactory {
     setConf(hiveConf, HIVE_ENABLE_CACHE_FOR_HDFS, config.isCachingEnabledForHDFS);
     setConf(hiveConf, HIVE_MAX_HIVE_CACHE_SPACE, config.maxCacheSpacePct);
 
+    addS3Properties(hiveConf);
     addUserProperties(hiveConf, config);
     return hiveConf;
+  }
+
+  private static void addS3Properties(HiveConf hiveConf) {
+    setConf(hiveConf, FS_S3_MAXIMUM_CONNECTIONS, "1000");
+    setConf(hiveConf, FS_S3_FAST_UPLOAD, "true");
+    setConf(hiveConf, FS_S3_FAST_UPLOAD_BUFFER, "disk");
+    setConf(hiveConf, FS_S3_FAST_UPLOAD_ACTIVE_BLOCKS, "4");
+    setConf(hiveConf, FS_S3_MAX_THREADS, "24");
+    setConf(hiveConf, FS_S3_MULTIPART_SIZE, "67108864");
+    setConf(hiveConf, FS_S3_MAX_TOTAL_TASKS, "30");
   }
 
   /**
@@ -176,18 +196,23 @@ public class HiveConfFactory {
       setConf(hiveConf, HiveConf.ConfVars.HIVE_ORC_CACHE_STRIPE_DETAILS_SIZE, 0);
     }
 
-    // Check if fs.s3.impl has been set by user
-    boolean fsS3ImplSetByUser = userPropertyNames.contains(FS_S3_IMPL);
-    if (fsS3ImplSetByUser) {
-      logger.warn(FS_S3_IMPL + " manually set. This is not recommended.");
-    } else {
-      logger.debug("Setting " + FS_S3_IMPL + " to " + FS_S3_IMPL_DEFAULT);
-      setConf(hiveConf, FS_S3_IMPL, FS_S3_IMPL_DEFAULT);
-    }
+    // Check if fs.s3(n).impl has been set by user
+    trySetDefault(userPropertyNames, hiveConf, FS_S3_IMPL, FS_S3_IMPL_DEFAULT);
+    trySetDefault(userPropertyNames, hiveConf, FS_S3N_IMPL, FS_S3_IMPL_DEFAULT);
 
     ADL_PROPS.entrySet().asList().forEach(entry->setConf(hiveConf, entry.getKey(), entry.getValue()));
     WASB_PROPS.entrySet().asList().forEach(entry->setConf(hiveConf, entry.getKey(), entry.getValue()));
     ABFS_PROPS.entrySet().asList().forEach(entry->setConf(hiveConf, entry.getKey(), entry.getValue()));
+  }
+
+  private static void trySetDefault(final Set<String> userPropertyNames, HiveConf hiveConf,
+                                    final String confProp, final String confPropVal) {
+    if (userPropertyNames.contains(confProp)) {
+      logger.warn(confProp + " is explicitly set. This is not recommended.");
+    } else {
+      logger.debug("Setting " + confProp + " to " + confPropVal);
+      setConf(hiveConf, confProp, confPropVal);
+    }
   }
 
   protected static void setConf(HiveConf configuration, String name, String value) {

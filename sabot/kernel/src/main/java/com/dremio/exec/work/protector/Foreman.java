@@ -29,6 +29,7 @@ import org.slf4j.LoggerFactory;
 
 import com.dremio.common.exceptions.InvalidMetadataErrorContext;
 import com.dremio.common.exceptions.UserException;
+import com.dremio.common.util.DremioVersionInfo;
 import com.dremio.common.utils.protos.AttemptId;
 import com.dremio.common.utils.protos.QueryWritableBatch;
 import com.dremio.exec.catalog.DatasetCatalog;
@@ -64,8 +65,10 @@ import com.dremio.proto.model.attempts.AttemptReason;
 import com.dremio.sabot.rpc.user.UserSession;
 import com.dremio.service.commandpool.CommandPool;
 import com.dremio.service.jobtelemetry.JobTelemetryClient;
+import com.dremio.service.jobtelemetry.PutTailProfileRequest;
 import com.dremio.service.namespace.NamespaceKey;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.cache.Cache;
@@ -150,20 +153,52 @@ public class Foreman {
   }
 
   private void newAttempt(AttemptReason reason, Predicate<DatasetConfig> datasetValidityChecker) {
-    // we should ideally check if the query wasn't cancelled before starting a new attempt but this will over-complicate
-    // things as the observer expects a query profile at completion and this may not be available if the cancellation
-    // is too early
-    final AttemptObserver attemptObserver = new Observer(observer.newAttempt(attemptId, reason));
+    try {
+      // we should ideally check if the query wasn't cancelled before starting a new attempt but this will over-complicate
+      // things as the observer expects a query profile at completion and this may not be available if the cancellation
+      // is too early
+      final AttemptObserver attemptObserver = new Observer(observer.newAttempt(attemptId, reason));
 
-    attemptHandler.newAttempt();
+      attemptHandler.newAttempt();
 
-    OptionProvider optionProvider = config;
-    if (reason != AttemptReason.NONE && attemptHandler.hasOOM()) {
-      optionProvider = new LowMemOptionProvider(config);
+      OptionProvider optionProvider = config;
+      if (reason != AttemptReason.NONE && attemptHandler.hasOOM()) {
+        optionProvider = new LowMemOptionProvider(config);
+      }
+
+      attemptManager = newAttemptManager(context, attemptId, request, attemptObserver, session,
+        optionProvider, plans, datasetValidityChecker, commandPool);
+
+    } catch (Throwable t) {
+      UserException uex = UserException.systemError(t).addContext("Failure while submitting the Query").build(logger);
+      final QueryProfile.Builder profileBuilder = QueryProfile.newBuilder()
+        .setStart(System.currentTimeMillis())
+        .setId(attemptId.toQueryId())
+        .setState(QueryState.FAILED)
+        .setCommandPoolWaitMillis(0)
+        .setQuery(request.getDescription())
+        .setError(uex.getMessage())
+        .setVerboseError(uex.getVerboseMessage(false))
+        .setErrorId(uex.getErrorId())
+        .setDremioVersion(DremioVersionInfo.getVersion())
+        .setEnd(System.currentTimeMillis());
+      try {
+        jobTelemetryClient.getBlockingStub()
+          .putQueryTailProfile(
+            PutTailProfileRequest.newBuilder()
+              .setQueryId(attemptId.toQueryId())
+              .setProfile(profileBuilder.build())
+              .build()
+          );
+      } catch (Exception telemetryEx) {
+        uex.addSuppressed(telemetryEx);
+      }
+
+      final UserResult result = new UserResult(null, attemptId.toQueryId(), QueryState.FAILED,
+        profileBuilder.build(), uex, null, false);
+      observer.execCompletion(result);
+      throw t;
     }
-
-    attemptManager = newAttemptManager(context, attemptId, request, attemptObserver, session,
-      optionProvider, plans, datasetValidityChecker, commandPool);
 
     if (request.runInSameThread()) {
       attemptManager.run();
@@ -262,11 +297,16 @@ public class Foreman {
   }
 
   public synchronized void cancel(String reason, boolean clientCancelled) {
+    cancel(reason, clientCancelled, null, false);
+  }
+
+  public synchronized void cancel(String reason, boolean clientCancelled, String cancelContext,
+                                  boolean isCancelledByHeapMonitor) {
     if (!canceled) {
       canceled = true;
 
       if (attemptManager != null) {
-        attemptManager.cancel(reason, clientCancelled);
+        attemptManager.cancel(reason, clientCancelled, cancelContext, isCancelledByHeapMonitor);
       }
     }
   }
@@ -429,18 +469,7 @@ public class Foreman {
           if (reason != AttemptReason.NONE) {
             super.attemptCompletion(result);
 
-            Predicate<DatasetConfig> datasetValidityChecker = Predicates.alwaysTrue();
-            if (reason == AttemptReason.INVALID_DATASET_METADATA) {
-              final InvalidMetadataErrorContext context = InvalidMetadataErrorContext.fromUserException(ex);
-              datasetValidityChecker = new Predicate<DatasetConfig>() {
-                final ImmutableSet<List<String>> keys = ImmutableSet.copyOf(context.getPathsToRefresh());
-
-                @Override
-                public boolean apply(DatasetConfig input) {
-                  return !keys.contains(input.getFullPathList());
-                }
-              };
-            }
+            Predicate<DatasetConfig> datasetValidityChecker = getDatasetValidityChecker(ex, reason);
 
             // run another attempt, after making the necessary changes to recover from the failure
             try {
@@ -468,6 +497,25 @@ public class Foreman {
       super.planParallelized(planningSet);
     }
 
+  }
+
+  @VisibleForTesting
+  static Predicate<DatasetConfig> getDatasetValidityChecker(UserException ex, AttemptReason reason) {
+    Predicate<DatasetConfig> datasetValidityChecker = Predicates.alwaysTrue();
+    if (reason == AttemptReason.INVALID_DATASET_METADATA) {
+      final InvalidMetadataErrorContext context = InvalidMetadataErrorContext.fromUserException(ex);
+      if (context != null) {
+        datasetValidityChecker = new Predicate<DatasetConfig>() {
+          private final ImmutableSet<List<String>> keys = ImmutableSet.copyOf(context.getPathsToRefresh());
+
+          @Override
+          public boolean apply(DatasetConfig input) {
+            return !keys.contains(input.getFullPathList());
+          }
+        };
+      }
+    }
+    return datasetValidityChecker;
   }
 
   private static class LowMemOptionProvider implements OptionProvider {

@@ -26,7 +26,7 @@ import {
 import {
   UPDATE_COLUMN_FILTER
 } from 'actions/explore/view';
-import {JOB_STATUS} from '@app/pages/ExplorePage/components/ExploreTable/ExploreTableJobStatus';
+import {JOB_STATUS, isWorking} from '@app/pages/ExplorePage/components/ExploreTable/ExploreTableJobStatus';
 
 export default function table(state, action) {
   switch (action.type) {
@@ -59,8 +59,8 @@ export default function table(state, action) {
       // endTime, jobId, isRun are not defined and are falsy at this time
     });
   case FAILED_EXPLORE_JOB_PROGRESS: {
-    const jobProgress = state.getIn(['tableData', 'jobProgress']);
-    return state.setIn(['tableData', 'jobProgress'], {
+    const jobProgress = state.getIn(['tableData', action.datasetVersion, 'jobProgress']);
+    return state.setIn(['tableData', action.datasetVersion, 'jobProgress'], {
       ...jobProgress,
       status: JOB_STATUS.failed,
       endTime: new Date().getTime()
@@ -69,18 +69,19 @@ export default function table(state, action) {
   case UPDATE_EXPLORE_JOB_PROGRESS: {
     const {jobUpdate} = action;
     // set jobProgress changes in state.tableData
-    const jobProgress = state.getIn(['tableData', 'jobProgress']);
+    const jobProgress = state.getIn(['tableData', jobUpdate.datasetVersion, 'jobProgress']);
+    const initJobProgress = state.getIn(['tableData', 'jobProgress']);
     const haveChange = !jobProgress
       || jobProgress.jobId !== jobUpdate.id
       || jobProgress.status !== jobUpdate.state
-      || jobProgress.startTime !== jobUpdate.startTime
       || (jobProgress.endTime && jobProgress.endTime !== jobUpdate.endTime)
       || jobProgress.datasetVersion !== jobUpdate.datasetVersion;
-    const newState = (haveChange) ? state.setIn(['tableData', 'jobProgress'], {
+    const newState = (haveChange) ? state.setIn(['tableData', jobUpdate.datasetVersion, 'jobProgress'], {
       ...jobProgress,
       jobId: jobUpdate.id,
       status: jobUpdate.state,
-      startTime: jobUpdate.startTime,
+      // keep startTime as in INIT until job is done
+      startTime: (isWorking(jobUpdate.state)) ? initJobProgress.startTime : jobUpdate.startTime,
       endTime: jobUpdate.endTime,
       datasetVersion: jobUpdate.datasetVersion
     }) : state;
@@ -91,16 +92,17 @@ export default function table(state, action) {
     return newState;
   }
   case SET_EXPLORE_JOBID_IN_PROGRESS: {
-    const jobProgress = state.getIn(['tableData', 'jobProgress']);
-    return state.setIn(['tableData', 'jobProgress'], {
+    const previousJobStatus = state.getIn(['tableData', action.datasetVersion, 'jobProgress']);
+    const jobProgress = previousJobStatus || state.getIn(['tableData', 'jobProgress']);
+    return state.setIn(['tableData', action.datasetVersion, 'jobProgress'], {
       ...jobProgress,
       jobId: action.jobId,
       datasetVersion: action.datasetVersion
     });
   }
   case UPDATE_EXPLORE_JOB_RECORDS: {
-    const jobProgress = state.getIn(['tableData', 'jobProgress']);
-    return state.setIn(['tableData', 'jobProgress'], {
+    const jobProgress = state.getIn(['tableData', action.datasetVersion, 'jobProgress']);
+    return state.setIn(['tableData', action.datasetVersion, 'jobProgress'], {
       ...jobProgress,
       recordCount: action.recordCount
     });

@@ -62,15 +62,17 @@ import org.xerial.snappy.SnappyOutputStream;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.common.utils.PathUtils;
 import com.dremio.connector.metadata.DatasetSplit;
+import com.dremio.connector.metadata.PartitionChunkListing;
 import com.dremio.datastore.SearchQueryUtils;
 import com.dremio.datastore.SearchTypes.SearchQuery;
 import com.dremio.datastore.api.LegacyIndexedStore;
 import com.dremio.datastore.api.LegacyIndexedStore.LegacyFindByCondition;
+import com.dremio.datastore.api.LegacyIndexedStoreCreationFunction;
 import com.dremio.datastore.api.LegacyKVStore;
 import com.dremio.datastore.api.LegacyKVStore.LegacyFindByRange;
+import com.dremio.datastore.api.LegacyKVStoreCreationFunction;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
 import com.dremio.datastore.api.LegacyStoreBuildingFactory;
-import com.dremio.datastore.api.LegacyStoreCreationFunction;
 import com.dremio.datastore.format.Format;
 import com.dremio.datastore.indexed.IndexKey;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
@@ -146,7 +148,7 @@ public class NamespaceServiceImpl implements NamespaceService {
   /**
    * Creator for name space kvstore.
    */
-  public static class NamespaceStoreCreator implements LegacyStoreCreationFunction<LegacyIndexedStore<String, NameSpaceContainer>> {
+  public static class NamespaceStoreCreator implements LegacyIndexedStoreCreationFunction<String, NameSpaceContainer> {
 
     @Override
     public LegacyIndexedStore<String, NameSpaceContainer> build(LegacyStoreBuildingFactory factory) {
@@ -171,7 +173,7 @@ public class NamespaceServiceImpl implements NamespaceService {
   /**
    * KVStore creator for partition chunks table
    */
-  public static class PartitionChunkCreator implements LegacyStoreCreationFunction<LegacyIndexedStore<PartitionChunkId, PartitionChunk>> {
+  public static class PartitionChunkCreator implements LegacyIndexedStoreCreationFunction<PartitionChunkId, PartitionChunk> {
 
     @SuppressWarnings("unchecked")
     @Override
@@ -193,7 +195,7 @@ public class NamespaceServiceImpl implements NamespaceService {
   /**
    * KVStore creator for multisplits table
    */
-  public static class MultiSplitStoreCreator implements LegacyStoreCreationFunction<LegacyKVStore<PartitionChunkId, MultiSplit>> {
+  public static class MultiSplitStoreCreator implements LegacyKVStoreCreationFunction<PartitionChunkId, MultiSplit> {
 
     @Override
     public LegacyKVStore<PartitionChunkId, MultiSplit> build(LegacyStoreBuildingFactory factory) {
@@ -303,6 +305,7 @@ public class NamespaceServiceImpl implements NamespaceService {
       final int consideredRange = insertionPoint - 1; // since a normal match would come directly after the start range, we need to check the range directly above the insertion point.
 
       if (consideredRange < 0 || !ranges.get(consideredRange).contains(id)) {
+        logger.debug("Deleting partition chunk associated with key {} from the partition chunk store.", e.getKey());
         partitionChunkStore.delete(e.getKey());
         ++elementCount;
       }
@@ -320,6 +323,7 @@ public class NamespaceServiceImpl implements NamespaceService {
       final int consideredRange = insertionPoint - 1; // since a normal match would come directly after the start range, we need to check the range directly above the insertion point.
 
       if (consideredRange < 0 || !ranges.get(consideredRange).contains(id)) {
+        logger.debug("Deleting multi split associated with key {} from the multi split store.", e.getKey());
         multiSplitStore.delete(e.getKey());
       }
     }
@@ -414,8 +418,8 @@ public class NamespaceServiceImpl implements NamespaceService {
     // make sure the id remains the same
     final String idInExistingContainer = getId(existingContainer);
     if (!idInExistingContainer.equals(idInContainer)) {
-      throw new ConcurrentModificationException(String.format("There already exists an entity of type [%s] at given path [%s] with Id %s. Unable to replace with Id %s",
-          existingContainer.getType(), newOrUpdatedEntity.getPathKey().getPath(), idInExistingContainer, idInContainer));
+      throw UserException.invalidMetadataError().message("There already exists an entity of type [%s] at given path [%s] with Id %s. Unable to replace with Id %s",
+          existingContainer.getType(), newOrUpdatedEntity.getPathKey().getPath(), idInExistingContainer, idInContainer).buildSilently();
     }
 
     return true;
@@ -467,6 +471,20 @@ public class NamespaceServiceImpl implements NamespaceService {
     createOrUpdateEntity(NamespaceEntity.toEntity(DATASET, datasetPath, dataset, keyNormalization, new ArrayList<>()), attributes);
   }
 
+  @Override
+  public boolean hasChildren(NamespaceKey key) {
+    final Iterable<NameSpaceContainer> children;
+    try {
+      children = iterateEntity(key);
+    } catch (NamespaceException e) {
+      throw new RuntimeException("failed during dataset listing of sub-tree under: " + key);
+    }
+    if (FluentIterable.from(children).size() > 0) {
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Accumulate metadata, then save it in the K/V store.
    */
@@ -510,8 +528,7 @@ public class NamespaceServiceImpl implements NamespaceService {
       accumulatedSplits = new ArrayList<>();
     }
 
-    @Override
-    public void saveDatasetSplit(DatasetSplit split) {
+    private void saveDatasetSplit(DatasetSplit split) {
       if (isClosed) {
         throw new IllegalStateException("Attempting to save a dataset split after the saver was closed");
       }
@@ -520,8 +537,7 @@ public class NamespaceServiceImpl implements NamespaceService {
       accumulatedSplits.add(split);
     }
 
-    @Override
-    public void savePartitionChunk(com.dremio.connector.metadata.PartitionChunk partitionChunk) throws IOException {
+    private void savePartitionChunk(com.dremio.connector.metadata.PartitionChunk partitionChunk) throws IOException {
       Preconditions.checkState(!isClosed, "Attempting to save a partition chunk after the saver was closed");
       if (accumulatedSplits.isEmpty()) {
         // Must have at least one split for the partition chunk
@@ -601,6 +617,24 @@ public class NamespaceServiceImpl implements NamespaceService {
     }
 
     @Override
+    public long savePartitionChunks(PartitionChunkListing chunkListing) throws IOException {
+      final Iterator<? extends com.dremio.connector.metadata.PartitionChunk> chunks = chunkListing.iterator();
+      long recordCountFromSplits = 0;
+      while (chunks.hasNext()) {
+        final com.dremio.connector.metadata.PartitionChunk chunk = chunks.next();
+
+        final Iterator<? extends DatasetSplit> splits = chunk.getSplits().iterator();
+        while (splits.hasNext()) {
+          final DatasetSplit split = splits.next();
+          saveDatasetSplit(split);
+          recordCountFromSplits += split.getRecordCount();
+        }
+        savePartitionChunk(chunk);
+      }
+      return recordCountFromSplits;
+    }
+
+    @Override
     public void saveDataset(DatasetConfig datasetConfig, boolean opportunisticSave, NamespaceAttribute... attributes) throws NamespaceException {
       Preconditions.checkState(!isClosed, "Attempting to save a partition chunk after the whole dataset was saved");
       Objects.requireNonNull(datasetConfig.getId(), "ID is required");
@@ -624,6 +658,10 @@ public class NamespaceServiceImpl implements NamespaceService {
             // could end up delete the splits of the existing dataset (see DX-12232)
             existingDatasetConfig.getReadDefinition().getSplitVersion() > nextDatasetVersion) {
             deleteSplits(createdPartitionChunks);
+            // copy splitVersion and other details from existingConfig
+            datasetConfig.getReadDefinition().setSplitVersion(existingDatasetConfig.getReadDefinition().getSplitVersion());
+            datasetConfig.setTotalNumSplits(existingDatasetConfig.getTotalNumSplits());
+            datasetConfig.setTag(existingDatasetConfig.getTag());
             isClosed = true;
             break;
           }
@@ -1395,7 +1433,7 @@ public class NamespaceServiceImpl implements NamespaceService {
       .from(partitionChunks)
       .transform(item ->
         item.getValue().hasSplitCount()
-          ? new PartitionChunkMetadataImpl(item.getValue(),  () -> multiSplitStore.get(item.getKey()))
+          ? new PartitionChunkMetadataImpl(item.getValue(), item.getKey(), () -> multiSplitStore.get(item.getKey()))
           : new LegacyPartitionChunkMetadata(item.getValue())
         );
   }

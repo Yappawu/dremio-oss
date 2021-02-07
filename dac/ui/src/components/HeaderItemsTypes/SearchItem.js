@@ -82,7 +82,8 @@ export class SearchItem extends Component {
         <FontIcon
           key='icon'
           type='SearchPaleNavy'
-          theme={styles.fontIcon}/>
+          theme={styles.fontIcon}
+        />
         <input
           key='textInput'
           type='text'
@@ -161,7 +162,8 @@ export default connect(mapStateToProps, {loadSearchData})(SearchItem);
 
 const styles = {
   searchStyle: {
-    margin: '9px 0 0 -18px'
+    margin: '9px 0 0 -18px',
+    zIndex: 1001
   },
   searchItem: {
     display: 'flex'
@@ -171,24 +173,21 @@ const styles = {
     backgroundColor: 'transparent',
     border: 0,
     height: 20,
-    transition: 'all .3s',
-    ':focus': {
-      width: 240
-    }
+    width: 300,
+    fontSize: 13,
+    marginTop: 2
   },
   table: {
     display: 'flex',
     alignItems: 'center',
-    height: 55,
+    justifyContent: 'center',
     margin: '0 0 0 12px'
   },
   row: {
-    borderBottom: '1px solid rgba(255, 255, 255, .5)',
-    width: 140,
-    transition: 'width 0.6s',
-    ':focus': {
-      width: 260
-    }
+    width: 336,
+    height: 32,
+    borderRadius: 4,
+    backgroundColor: '#3F4C5C'
   },
   col1: {
     display: 'table-cell',
@@ -196,14 +195,12 @@ const styles = {
   },
   fontIcon: {
     'Icon': {
-      width: 22,
-      height: 22
+      width: 24,
+      height: 24
     },
     'Container': {
-      marginLeft: -4,
-      width: 22,
-      height: 22,
-      marginTop: -3
+      width: 24,
+      height: 24
     }
   }
 };

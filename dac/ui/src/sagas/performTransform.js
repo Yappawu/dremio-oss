@@ -17,6 +17,7 @@ import { all, put, call, takeEvery, spawn, select, take, fork} from 'redux-saga/
 import invariant from 'invariant';
 import { newUntitledSql, newUntitledSqlAndRun } from 'actions/explore/dataset/new';
 import { PERFORM_TRANSFORM, runTableTransform } from 'actions/explore/dataset/transform';
+import { resetViewState } from 'actions/resources';
 import { initializeExploreJobProgress } from '@app/actions/explore/dataset/data';
 import {
   PERFORM_TRANSFORM_AND_RUN,
@@ -26,10 +27,13 @@ import {
 } from 'actions/explore/dataset/run';
 import { expandExploreSql } from 'actions/explore/ui';
 
+import { EXPLORE_TABLE_ID } from 'reducers/explore/view';
+
 import { loadTableData, cancelDataLoad, loadDataset, focusSqlEditorSaga } from '@app/sagas/performLoadDataset';
 import { transformHistoryCheck } from 'sagas/transformHistoryCheck';
 import { getExploreState, getExplorePageDataset } from 'selectors/explore';
 import { getExploreViewState } from 'selectors/resources';
+import { updateTransformData } from '@inject/actions/explore/dataset/updateLocation';
 
 import apiUtils from 'utils/apiUtils/apiUtils';
 import { needsTransform } from 'sagas/utils';
@@ -37,6 +41,7 @@ import { needsTransform } from 'sagas/utils';
 import {
   transformThenNavigate, TransformFailedError, TransformCanceledError, TransformCanceledByLocationChangeError
 } from './transformWatcher';
+
 
 export default function* watchPerformTransform() {
   yield all([
@@ -77,7 +82,7 @@ export function* performTransform({
     const didTransform = !!apiAction;
     if (apiAction) {
       yield call(cancelDataLoad);
-      yield put(initializeExploreJobProgress(isRun));
+      yield put(initializeExploreJobProgress(isRun, resultDataset.get('datasetVersion')));
       // response will be not empty. See transformThenNavigate
       const response = yield call(transformThenNavigate, apiAction, viewId, navigateOptions);
       if (!response || response.error) {
@@ -156,6 +161,7 @@ export function* getFetchDatasetMetaAction({
   transformData,
   forceDataLoad
 }) {
+
   const sql = currentSql || dataset.get('sql');
   invariant(!queryContext || queryContext instanceof Immutable.List, 'queryContext must be Immutable.List');
   const finalTransformData = yield call(getTransformData, dataset, sql, queryContext, transformData);
@@ -168,7 +174,10 @@ export function* getFetchDatasetMetaAction({
       apiAction = yield call(newUntitledSqlAndRun, sql, queryContext, viewId);
       navigateOptions = { changePathname: true }; //changePathname to navigate to newUntitled
     } else if (finalTransformData) {
+      updateTransformData(finalTransformData);
+
       // transform is requested. Transform and run.
+      yield put(resetViewState(EXPLORE_TABLE_ID)); // Clear error from previous query run
       apiAction = yield call(transformAndRunDataset, dataset, finalTransformData, viewId);
     } else {
       // just run

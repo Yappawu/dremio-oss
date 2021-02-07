@@ -20,6 +20,7 @@ import static com.dremio.service.accelerator.AccelerationUtils.selfOrEmpty;
 import static com.dremio.service.reflection.ReflectionServiceImpl.ACCELERATOR_STORAGEPLUGIN_NAME;
 import static com.dremio.service.users.SystemUser.SYSTEM_USERNAME;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedList;
@@ -108,6 +109,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 
+import io.protostuff.LinkedBuffer;
+import io.protostuff.ProtostuffIOUtil;
+
 /**
  * Helper functions for Reflection management
  */
@@ -129,20 +133,41 @@ public class ReflectionUtils {
     return t == DatasetType.PHYSICAL_DATASET_HOME_FILE || t == DatasetType.PHYSICAL_DATASET_HOME_FOLDER;
   }
 
-  public static Integer computeDatasetHash(DatasetConfig dataset, NamespaceService namespaceService) throws NamespaceException {
+  public static Integer computeDatasetHash(DatasetConfig dataset, NamespaceService namespaceService, boolean ignorePds) throws NamespaceException {
     Queue<DatasetConfig> q = new LinkedList<>();
     q.add(dataset);
     int hash = 1;
+    boolean isFirst = true;
     while (!q.isEmpty()) {
       dataset = q.poll();
       if (isPhysicalDataset(dataset.getType())) {
-        hash = 31 * hash + (dataset.getRecordSchema() == null ? 1 : dataset.getRecordSchema().hashCode());
-      } else {
-        hash = 31 * hash + dataset.getVirtualDataset().getSql().hashCode();
-        for (ParentDataset parent : dataset.getVirtualDataset().getParentsList()) {
-          q.add(namespaceService.getDataset(new NamespaceKey(parent.getDatasetPathList())));
+        if (!ignorePds || isFirst) {
+          hash = 31 * hash + (dataset.getRecordSchema() == null ? 1 : dataset.getRecordSchema().hashCode());
         }
+      } else {
+        int schemaHash = 0;
+        if (isFirst) {
+          final List<ViewFieldType> types = new ArrayList<>();
+          dataset.getVirtualDataset().getSqlFieldsList().forEach(type -> {
+            if (type.getSerializedField() != null) {
+              ViewFieldType newType = new ViewFieldType();
+              ProtostuffIOUtil.mergeFrom(ProtostuffIOUtil.toByteArray(type, ViewFieldType.getSchema(), LinkedBuffer.allocate()), newType, ViewFieldType.getSchema());
+              types.add(newType.setSerializedField(null));
+            } else {
+              types.add(type);
+            }
+          });
+          schemaHash = types.hashCode();
+        }
+        hash = 31 * hash + dataset.getVirtualDataset().getSql().hashCode() + schemaHash;
+          for (ParentDataset parent : dataset.getVirtualDataset().getParentsList()) {
+            int size = parent.getDatasetPathList().size();
+            if( !(size > 1 && parent.getDatasetPathList().get(size-1).equalsIgnoreCase("external_query"))) {
+              q.add(namespaceService.getDataset(new NamespaceKey(parent.getDatasetPathList())));
+            }
+          }
       }
+      isFirst = false;
     }
     return hash;
   }
@@ -242,7 +267,8 @@ public class ReflectionUtils {
       getPartitionNames(materialization.getPartitionList()),
       updateSettings,
       JoinDependencyProperties.NONE,
-      materialization.getLogicalPlanStrippedHash());
+      materialization.getLogicalPlanStrippedHash(),
+      materialization.getStripVersion());
   }
 
   public static List<String> getPartitionNames(List<DataPartition> partitions) {
@@ -264,6 +290,16 @@ public class ReflectionUtils {
     return !hosts.containsAll(partitionNames);
   }
 
+  /**
+   * check with ignorePds true and then also false, for backward compatibility
+   */
+  static boolean hashEquals(int hash, DatasetConfig dataset, NamespaceService ns) throws NamespaceException {
+    return
+      hash == computeDatasetHash(dataset, ns, true)
+        ||
+      hash == computeDatasetHash(dataset, ns, false);
+  }
+
   public static MaterializationDescriptor getMaterializationDescriptor(final ExternalReflection externalReflection,
                                                                        final NamespaceService namespaceService) throws NamespaceException {
     DatasetConfig queryDataset = namespaceService.findDatasetByUUID(externalReflection.getQueryDatasetId());
@@ -279,7 +315,7 @@ public class ReflectionUtils {
       return null;
     }
 
-    if (!externalReflection.getQueryDatasetHash().equals(computeDatasetHash(queryDataset, namespaceService))) {
+    if (!hashEquals(externalReflection.getQueryDatasetHash(), queryDataset, namespaceService)) {
       logger.debug("Reflection {} excluded because query dataset {} is out of sync",
         externalReflection.getName(),
         PathUtils.constructFullPath(queryDataset.getFullPathList())
@@ -287,7 +323,7 @@ public class ReflectionUtils {
       return null;
     }
 
-    if (!externalReflection.getTargetDatasetHash().equals(computeDatasetHash(targetDataset, namespaceService))) {
+    if (!hashEquals(externalReflection.getTargetDatasetHash(), targetDataset, namespaceService)) {
       logger.debug("Reflection {} excluded because target dataset {} is out of sync",
         externalReflection.getName(),
         PathUtils.constructFullPath(targetDataset.getFullPathList())
@@ -300,6 +336,7 @@ public class ReflectionUtils {
         externalReflection.getId(),
         ReflectionType.EXTERNAL,
         externalReflection.getName(),
+        false,
         null,
         null,
         null,
@@ -327,7 +364,7 @@ public class ReflectionUtils {
     final ReflectionDetails details = reflectionGoal.getDetails();
     return new MaterializationDescriptor.ReflectionInfo(id,
         reflectionGoal.getType() == com.dremio.service.reflection.proto.ReflectionType.RAW ? ReflectionType.RAW : ReflectionType.AGG,
-        reflectionGoal.getName(),
+        reflectionGoal.getName(), reflectionGoal.getArrowCachingEnabled(),
         s(details.getSortFieldList()).map(t -> t.getName()).collect(Collectors.toList()),
         s(details.getPartitionFieldList()).map(t -> t.getName()).collect(Collectors.toList()),
         s(details.getDistributionFieldList()).map(t -> t.getName()).collect(Collectors.toList()),
@@ -538,7 +575,8 @@ public class ReflectionUtils {
   }
 
   public static Refresh createRefresh(ReflectionId reflectionId, List<String> refreshPath, final long seriesId, final int seriesOrdinal,
-                                      final UpdateId updateId, JobDetails details, MaterializationMetrics metrics, List<DataPartition> dataPartitions) {
+                                      final UpdateId updateId, JobDetails details, MaterializationMetrics metrics, List<DataPartition> dataPartitions,
+                                      final boolean isIcebergRefresh, final String icebergBasePath) {
     final String path = PathUtils.getPathJoiner().join(Iterables.skip(refreshPath, 1));
 
     return new Refresh()
@@ -551,7 +589,9 @@ public class ReflectionUtils {
       .setUpdateId(updateId)
       .setSeriesOrdinal(seriesOrdinal)
       .setPath(path)
-      .setJob(details);
+      .setJob(details)
+      .setIsIcebergRefresh(isIcebergRefresh)
+      .setBasePath(icebergBasePath);
   }
 
   public static List<String> getRefreshPath(final JobId jobId, final Path accelerationBasePath, JobsService jobsService, BufferAllocator allocator) {
@@ -629,5 +669,16 @@ public class ReflectionUtils {
       .setOriginalCost(JobsProtoUtil.getLastAttempt(jobDetails).getInfo().getOriginalCost())
       .setMedianFileSize(medianFileSize)
       .setNumFiles(numFiles);
+  }
+
+  public static String getIcebergReflectionBasePath(Materialization materialization, List<String> refreshPath, boolean isIcebergRefresh) {
+    if (materialization.getBasePath() != null && !materialization.getBasePath().isEmpty()) {
+      return materialization.getBasePath();
+    }
+    if (isIcebergRefresh) {
+      Preconditions.checkState(refreshPath.size() >= 2, "Unexpected state");
+      return refreshPath.get(refreshPath.size() - 1);
+    }
+    return "";
   }
 }

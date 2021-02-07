@@ -53,6 +53,7 @@ export default class Select extends PureComponent {
   state = { anchorEl: null };
 
   getButtonLabel(value) {
+
     const {
       items,
       selectedValueRenderer,
@@ -62,6 +63,7 @@ export default class Select extends PureComponent {
     const current = items.find(item => {
       return comparator(value, this.getValue(item));
     });
+
     if (!current) {
       return '';
     }
@@ -135,8 +137,9 @@ export default class Select extends PureComponent {
         className={classNames(['field', button, className])}
         style={style}
         listClass={classNames([listCls, listClass])}
+        listStyle={{width: 250}}
         dataQa={dataQa}
-        rootAttrs={{ 'aria-role': 'listbox' }}
+        rootAttrs={{ 'role': 'listbox' }}
       >
         {
           ({ closeDD }) => this.renderItems(selectedValue, closeDD)

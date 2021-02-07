@@ -16,8 +16,10 @@
 package com.dremio.sabot.exec.rpc;
 
 import java.io.IOException;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 
 import com.dremio.common.config.SabotConfig;
@@ -45,7 +47,6 @@ import com.dremio.services.fabric.api.PhysicalConnection;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
 
-import io.netty.buffer.ArrowBuf;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.NettyArrowBuf;
 
@@ -92,7 +93,7 @@ public class ExecProtocol implements FabricProtocol {
 
     case RpcType.REQ_OOB_MESSAGE_VALUE: {
       final OOBMessage oobMessage = RpcBus.get(pBody, OOBMessage.PARSER);
-      handleOobMessage(oobMessage);
+      handleOobMessage(oobMessage, body);
       sender.send(OK);
       return;
     }
@@ -102,8 +103,9 @@ public class ExecProtocol implements FabricProtocol {
     }
   }
 
-  private void handleOobMessage(final OOBMessage message) {
-    fragmentsManager.handle(new OutOfBandMessage(message));
+  private void handleOobMessage(final OOBMessage message, final ByteBuf body) {
+    final ArrowBuf buf = Optional.ofNullable(body).map(b -> ((NettyArrowBuf) b).arrowBuf()).orElse(null);
+    fragmentsManager.handle(new OutOfBandMessage(message, buf));
   }
 
   private void handleReceiverFinished(final FinishedReceiver finishedReceiver) throws RpcException {

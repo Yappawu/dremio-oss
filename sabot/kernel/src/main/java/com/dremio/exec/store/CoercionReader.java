@@ -22,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.ValueVector;
-import org.apache.arrow.vector.complex.writer.BaseWriter.ComplexWriter;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.util.TransferPair;
 
@@ -51,7 +50,6 @@ import com.dremio.sabot.exec.context.OperatorContext;
 import com.dremio.sabot.exec.context.OperatorStats;
 import com.dremio.sabot.op.project.ProjectOperator;
 import com.dremio.sabot.op.project.Projector;
-import com.dremio.sabot.op.project.Projector.ComplexWriterCreator;
 import com.dremio.sabot.op.scan.OutputMutator;
 import com.dremio.sabot.op.scan.ScanOperator;
 import com.google.common.base.Stopwatch;
@@ -59,29 +57,24 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.Lists;
 
 public class CoercionReader extends AbstractRecordReader {
-  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(CoercionReader.class);
+  private static final boolean DEBUG_PRINT = false;
 
-  protected VectorContainer outgoing;
-  protected VectorContainer incoming;
   protected final List<ValueVector> allocationVectors = Lists.newArrayList();
   protected final SampleMutator mutator;
   protected final RecordReader inner;
-  protected Projector projector;
   protected final BatchSchema targetSchema;
   protected final List<NamedExpression> exprs;
   protected final ExpressionEvaluationOptions projectorOptions;
+
+  protected Projector projector;
+  protected VectorContainer outgoing;
+  protected VectorContainer incoming;
   protected ExpressionSplitter splitter;
+  protected OutputMutator outputMutator;
   protected Stopwatch javaCodeGenWatch = Stopwatch.createUnstarted();
   protected Stopwatch gandivaCodeGenWatch = Stopwatch.createUnstarted();
 
-  protected OutputMutator outputMutator;
-
-  private static final boolean DEBUG_PRINT = false;
-
-  public CoercionReader(OperatorContext context,
-                        List<SchemaPath> columns,
-                        RecordReader inner,
-                        BatchSchema targetSchema) {
+  public CoercionReader(OperatorContext context, List<SchemaPath> columns, RecordReader inner, BatchSchema targetSchema) {
     super(context, columns);
     this.mutator = new SampleMutator(context.getAllocator());
     this.incoming = mutator.getContainer();
@@ -169,22 +162,11 @@ public class CoercionReader extends AbstractRecordReader {
     }
     javaCodeGenWatch.start();
     this.projector = cg.getCodeGenerator().getImplementationClass();
-    this.projector.setup(
-      context.getFunctionContext(),
-      incoming,
-      projectorOutput,
-      transfers,
-      new ComplexWriterCreator() {
-        @Override
-        public ComplexWriter addComplexWriter(String name) {
-          return null;
-        }
-      }
-    );
+    this.projector.setup(context.getFunctionContext(), incoming, projectorOutput, transfers, name -> null);
     javaCodeGenWatch.stop();
     OperatorStats stats = context.getStats();
-    stats.addLongStat(ScanOperator.Metric.JAVA_BUILD_TIME, javaCodeGenWatch.elapsed(TimeUnit.MILLISECONDS));
-    stats.addLongStat(ScanOperator.Metric.GANDIVA_BUILD_TIME, gandivaCodeGenWatch.elapsed(TimeUnit.MILLISECONDS));
+    stats.addLongStat(ScanOperator.Metric.JAVA_BUILD_TIME_NS, javaCodeGenWatch.elapsed(TimeUnit.NANOSECONDS));
+    stats.addLongStat(ScanOperator.Metric.GANDIVA_BUILD_TIME_NS, gandivaCodeGenWatch.elapsed(TimeUnit.NANOSECONDS));
     gandivaCodeGenWatch.reset();
     javaCodeGenWatch.reset();
   }
@@ -211,12 +193,16 @@ public class CoercionReader extends AbstractRecordReader {
     return recordCount;
   }
 
+  @Override
+  public List<SchemaPath> getColumnsToBoost() {
+    return inner.getColumnsToBoost();
+  }
+
   protected void runProjector(int recordCount) {
     if (projector != null) {
       try {
         if (recordCount > 0) {
-          splitter.projectRecords(recordCount, javaCodeGenWatch,
-              gandivaCodeGenWatch);
+          splitter.projectRecords(recordCount, javaCodeGenWatch, gandivaCodeGenWatch);
         }
         javaCodeGenWatch.start();
         projector.projectRecords(recordCount);
@@ -229,8 +215,8 @@ public class CoercionReader extends AbstractRecordReader {
       }
     }
     OperatorStats stats = context.getStats();
-    stats.addLongStat(ScanOperator.Metric.JAVA_EXECUTE_TIME, javaCodeGenWatch.elapsed(TimeUnit.MILLISECONDS));
-    stats.addLongStat(ScanOperator.Metric.GANDIVA_EXECUTE_TIME, gandivaCodeGenWatch.elapsed(TimeUnit.MILLISECONDS));
+    stats.addLongStat(ScanOperator.Metric.JAVA_EXECUTE_TIME_NS, javaCodeGenWatch.elapsed(TimeUnit.NANOSECONDS));
+    stats.addLongStat(ScanOperator.Metric.GANDIVA_EXECUTE_TIME_NS, gandivaCodeGenWatch.elapsed(TimeUnit.NANOSECONDS));
     javaCodeGenWatch.reset();
     gandivaCodeGenWatch.reset();
   }

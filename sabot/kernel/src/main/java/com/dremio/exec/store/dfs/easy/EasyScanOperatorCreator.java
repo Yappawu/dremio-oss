@@ -38,6 +38,7 @@ import com.dremio.exec.store.SplitAndPartitionInfo;
 import com.dremio.exec.store.dfs.FileSystemPlugin;
 import com.dremio.exec.store.dfs.PhysicalDatasetUtils;
 import com.dremio.exec.store.dfs.implicit.CompositeReaderConfig;
+import com.dremio.exec.store.parquet.RecordReaderIterator;
 import com.dremio.exec.util.ColumnUtils;
 import com.dremio.io.file.FileSystem;
 import com.dremio.io.file.Path;
@@ -122,7 +123,7 @@ public class EasyScanOperatorCreator implements ProducerOperator.Creator<EasySub
     final boolean sortReaders = context.getOptions().getOption(ExecConstants.SORT_FILE_BLOCKS);
     final List<SplitAndExtended> workList = sortReaders ?  unorderedWork.toSortedList(SPLIT_COMPARATOR) : unorderedWork.toList();
     final boolean selectAllColumns = selectsAllColumns(config.getFullSchema(), config.getColumns());
-    final CompositeReaderConfig readerConfig = CompositeReaderConfig.getCompound(config.getFullSchema(), config.getColumns(), config.getPartitionColumns());
+    final CompositeReaderConfig readerConfig = CompositeReaderConfig.getCompound(context, config.getFullSchema(), config.getColumns(), config.getPartitionColumns());
     final List<SchemaPath> innerFields = selectAllColumns ? ImmutableList.of(ColumnUtils.STAR_COLUMN) : readerConfig.getInnerColumns();
 
     FluentIterable<RecordReader> readers =
@@ -164,7 +165,7 @@ public class EasyScanOperatorCreator implements ProducerOperator.Creator<EasySub
                   }
                 });
 
-    return new ScanOperator(config, context, readers.iterator());
+    return new ScanOperator(config, context, RecordReaderIterator.from(readers.iterator()));
   }
 
   /**

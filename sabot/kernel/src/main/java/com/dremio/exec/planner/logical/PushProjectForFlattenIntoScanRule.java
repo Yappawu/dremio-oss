@@ -25,6 +25,7 @@ import org.apache.calcite.rex.RexNode;
 import com.dremio.exec.planner.common.ScanRelBase;
 import com.dremio.exec.planner.physical.PrelUtil;
 import com.dremio.exec.planner.physical.PrelUtil.ProjectPushInfo;
+import com.dremio.exec.store.dfs.FilterableScan;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Lists;
 
@@ -46,12 +47,18 @@ public class PushProjectForFlattenIntoScanRule extends RelOptRule{
     final ScanRelBase scan = call.rel(1);
 
     try {
-      final ProjectPushInfo columnInfoItemsExprs = PrelUtil.getColumns(scan.getRowType(), proj.getItemExprs());
+      final ProjectPushInfo columnInfoItemsExprs = PrelUtil.getColumns(scan.getRowType(), proj.getStructuredColumnExprs());
       if (columnInfoItemsExprs == null || columnInfoItemsExprs.isStarQuery()) {
         return;
       }
 
-      final ScanRelBase newScan = scan.cloneWithProject(columnInfoItemsExprs.columns);
+
+      ScanRelBase newScan;
+      if(scan instanceof FilterableScan) {
+        newScan = (ScanRelBase) ((FilterableScan) scan).cloneWithProject(columnInfoItemsExprs.columns, true);
+      } else {
+        newScan = scan.cloneWithProject(columnInfoItemsExprs.columns);
+      }
 
       // if the scan is the same as this one (no change in projections), no need to push down.
       if(newScan.getProjectedColumns().equals(scan.getProjectedColumns())){

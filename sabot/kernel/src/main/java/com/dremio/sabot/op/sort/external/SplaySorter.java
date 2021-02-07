@@ -18,6 +18,7 @@ package com.dremio.sabot.op.sort.external;
 import java.io.IOException;
 import java.util.List;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -36,7 +37,6 @@ import com.dremio.exec.record.selection.SelectionVector2;
 import com.dremio.exec.record.selection.SelectionVector4;
 import com.google.common.collect.Lists;
 
-import io.netty.buffer.ArrowBuf;
 import io.netty.buffer.NettyArrowBuf;
 
 /**
@@ -120,7 +120,7 @@ public class SplaySorter implements Sorter {
       final SelectionVector2 incomingSv2 = data.getSv2();
       if (incomingSv2 != null) {
         // just copy the sv2.
-        NettyArrowBuf buffer = localSortVector.getBuffer(false).asNettyBuffer();
+        NettyArrowBuf buffer = NettyArrowBuf.unwrapBuffer(localSortVector.getBuffer(false));
         buffer.arrowBuf().setBytes(buffer.writerIndex(), incomingSv2.getBuffer(false), 0,
           recordCount * 2);
       } else {

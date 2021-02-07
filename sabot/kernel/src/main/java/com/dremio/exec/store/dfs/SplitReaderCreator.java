@@ -18,14 +18,15 @@ package com.dremio.exec.store.dfs;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.arrow.util.Preconditions;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 
 import com.dremio.common.exceptions.InvalidMetadataErrorContext;
 import com.dremio.common.exceptions.UserException;
 import com.dremio.exec.store.RecordReader;
 import com.dremio.exec.store.parquet.InputStreamProvider;
+import com.dremio.exec.store.parquet.MutableParquetMetadata;
 import com.dremio.io.file.Path;
 import com.dremio.sabot.exec.store.parquet.proto.ParquetProtobuf;
 
@@ -42,7 +43,6 @@ public abstract class SplitReaderCreator implements AutoCloseable {
   protected InputStreamProvider inputStreamProvider;
   protected ParquetProtobuf.ParquetDatasetSplitScanXAttr splitXAttr;
 
-
   public SplitReaderCreator() {
   }
 
@@ -54,14 +54,14 @@ public abstract class SplitReaderCreator implements AutoCloseable {
    * Creates reader to read current parquet split
    * @return
    */
-  public abstract RecordReader createRecordReader();
+  public abstract RecordReader createRecordReader(MutableParquetMetadata footer);
 
   /**
    * Initializes InputStreamProvider to be used by split reader
    * @param lastPath
-   * @param lastFooter
+   * @param lastInputStreamProvider
    */
-  public abstract void createInputStreamProvider(Path lastPath, ParquetMetadata lastFooter);
+  public abstract void createInputStreamProvider(InputStreamProvider lastInputStreamProvider, MutableParquetMetadata lastFooter);
 
   /**
    * Strictly abstract - all extending classes should close all closeables including inputStreamProvider
@@ -75,9 +75,14 @@ public abstract class SplitReaderCreator implements AutoCloseable {
    * Get current split's parquet footer
    * @return
    */
-  public ParquetMetadata getFooter() {
+  public MutableParquetMetadata getFooter() {
     Preconditions.checkNotNull(inputStreamProvider);
     return handleEx(() -> inputStreamProvider.getFooter());
+  }
+
+  public InputStreamProvider getInputStreamProvider() {
+    Preconditions.checkNotNull(inputStreamProvider);
+    return inputStreamProvider;
   }
 
   /**
@@ -87,6 +92,28 @@ public abstract class SplitReaderCreator implements AutoCloseable {
   public Path getPath() {
     Preconditions.checkNotNull(path);
     return path;
+  }
+
+  /**
+   * Adds the row groups that will be read by this split
+   */
+  public abstract void addRowGroupsToRead(Set<Integer> rowGroupList);
+
+  /**
+   * Iterates over the splits and identifies all row groups that are going
+   * to be read from the given filePath
+   */
+  public void getRowGroupsFromSameFile(Path filePath, Set<Integer> rowGroupList) {
+    if (!filePath.equals(path)) {
+      return;
+    }
+
+    // this split shares the same file
+    if (next != null) {
+      next.getRowGroupsFromSameFile(filePath, rowGroupList);
+    }
+
+    addRowGroupsToRead(rowGroupList);
   }
 
   /**

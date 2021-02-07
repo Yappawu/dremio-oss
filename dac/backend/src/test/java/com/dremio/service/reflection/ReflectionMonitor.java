@@ -21,6 +21,7 @@ import static com.dremio.service.reflection.proto.MaterializationState.DEPRECATE
 import static com.dremio.service.reflection.proto.MaterializationState.FAILED;
 import static com.dremio.service.reflection.proto.ReflectionState.ACTIVE;
 import static com.dremio.service.reflection.proto.ReflectionState.REFRESHING;
+import static com.dremio.service.users.SystemUser.SYSTEM_USERNAME;
 
 import java.util.Objects;
 import java.util.concurrent.Future;
@@ -134,6 +135,26 @@ public class ReflectionMonitor {
     throw new IllegalStateException();
   }
 
+  public void waitTillReflectionManagerHasCycled(){
+    ReflectionManager reflectionManager = reflections.getReflectionManager();
+    long last = reflectionManager.getLastWakeupTime();
+    Wait w = new Wait();
+    //We need to wait till 2 refresh cycles have completed to ensure we were not in the middle of one
+    boolean cycled = false;
+    do {
+      if(last < reflectionManager.getLastWakeupTime()) {
+        if(cycled){
+          return;
+        } else {
+          cycled = true;
+        }
+      } else {
+        reflections.wakeupManager("Testing");
+      }
+    } while(w.loop());
+    throw new IllegalStateException();
+  }
+
   /**
    * Throws a runtime exception for a failed materialization with its error message
    * @param failedMaterialization   failed materialization
@@ -145,7 +166,9 @@ public class ReflectionMonitor {
       .setJobId(JobProtobuf.JobId.newBuilder()
         .setId(failedMaterialization.getInitRefreshJobId())
         .build())
+      .setUserName(SYSTEM_USERNAME)
       .build();
+
     try {
       final QueryProfile queryProfile = jobsService.getProfile(request);
       if (queryProfile.getState() == QueryResult.QueryState.FAILED) {

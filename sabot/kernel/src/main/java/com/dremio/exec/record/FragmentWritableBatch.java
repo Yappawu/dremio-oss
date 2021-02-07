@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.VectorUnloader;
@@ -33,8 +34,8 @@ import com.google.common.collect.FluentIterable;
 import com.google.flatbuffers.FlatBufferBuilder;
 import com.google.protobuf.ByteString;
 
-import io.netty.buffer.ArrowBuf;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.NettyArrowBuf;
 
 public class FragmentWritableBatch{
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FragmentWritableBatch.class);
@@ -101,7 +102,7 @@ public class FragmentWritableBatch{
       final int receiveMajorFragmentId,
       ArrowRecordBatch recordBatch,
       final int... receiveMinorFragmentId){
-    this.buffers = recordBatch.getBuffers().stream().map(buf -> buf.asNettyBuffer()).collect
+    this.buffers = recordBatch.getBuffers().stream().map(buf -> NettyArrowBuf.unwrapBuffer(buf)).collect
       (Collectors.toList()).toArray(new ByteBuf[0]);
     this.recordCount = recordBatch.getLength();
     FlatBufferBuilder fbbuilder = new FlatBufferBuilder();

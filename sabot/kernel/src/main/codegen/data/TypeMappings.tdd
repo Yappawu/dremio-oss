@@ -32,5 +32,9 @@
   "TimeNano":         { supported: false },
   "TimeMilli":        { minor_type: "TIME" },
   "Duration":         { supported: false },
+  "LargeVarChar":     { supported: false },
+  "LargeVarBinary":   { supported: false },
+  "LargeVarList":     { supported: false },
+  "Decimal256":       { supported: false },
 }
 

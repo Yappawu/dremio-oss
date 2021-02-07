@@ -19,6 +19,7 @@ import java.security.KeyStore;
 
 import javax.inject.Provider;
 
+import com.dremio.dac.daemon.DremioBinder;
 import com.dremio.dac.daemon.ServerHealthMonitor;
 import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
 import com.dremio.exec.server.SabotContext;
@@ -72,6 +73,11 @@ public class WebServer implements Service {
      * Tableau TDS media type (for Native Drill Connector)
      */
     public static final MediaType APPLICATION_TDS_DRILL_TYPE = new MediaType("application", "tds+drill");
+
+    /**
+     * Power BI DS media type
+     */
+    public static final String APPLICATION_PBIDS = "application/pbids";
   }
 
   /**
@@ -99,6 +105,7 @@ public class WebServer implements Service {
   private final DACConfig config;
   private final Provider<NodeEndpoint> endpointProvider;
   private final Provider<SabotContext> context;
+  private final DremioBinder dremioBinder;
   private final Tracer tracer;
   private final String uiType;
   private final boolean isInternalUS;
@@ -112,6 +119,7 @@ public class WebServer implements Service {
       Provider<RestServerV2> restServer,
       Provider<APIServer> apiServer,
       Provider<DremioServer> server,
+      DremioBinder dremioBinder,
       Tracer tracer,
       String uiType,
       boolean isInternalUS) {
@@ -122,6 +130,7 @@ public class WebServer implements Service {
     this.context = context;
     this.restServerProvider = restServer;
     this.apiServerProvider = apiServer;
+    this.dremioBinder = dremioBinder;
     this.tracer = tracer;
     this.uiType = uiType;
     this.isInternalUS = isInternalUS;
@@ -142,6 +151,7 @@ public class WebServer implements Service {
       context,
       restServerProvider,
       apiServerProvider,
+      dremioBinder,
       tracer,
       uiType,
       isInternalUS

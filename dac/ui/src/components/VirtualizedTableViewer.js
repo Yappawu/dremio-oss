@@ -20,10 +20,12 @@ import { AutoSizer, Column, Table } from 'react-virtualized';
 import classNames from 'classnames';
 import Immutable from 'immutable';
 
-import { humanSorter } from 'utils/sort';
+import { humanSorter, getSortValue } from '@app/utils/sort';
+import { virtualizedRow } from './VirtualizedTableViewer.less';
 
 const ROW_HEIGHT = 30;
-const HEADER_HEIGHT = 39;
+const HEADER_HEIGHT = 30;
+const TABLE_BOTTOM_CUSHION = 10;
 
 export const SortDirection = {
   ASC: 'ASC',
@@ -67,7 +69,7 @@ export default class VirtualizedTableViewer extends Component {
   };
 
   rowClassName(rowData, index) {
-    return ((rowData && rowData.rowClassName) || '') + ' ' + (index % 2 ? 'odd' : 'even');
+    return classNames(((rowData && rowData.rowClassName) || '') + ' ' + (index % 2 ? 'odd' : 'even'), virtualizedRow); // Adding virtualizedRow for keeping the Row styles stable wrt another class
   }
 
   handleScroll = ({scrollTop}) => {
@@ -114,17 +116,9 @@ export default class VirtualizedTableViewer extends Component {
     const { tableData, columns, style, resetScrollTop, ...tableProps } = this.props;
     const { sortBy, sortDirection } = this.state;
 
-    const getSortValue = (item) => {
-      const value = item.data[sortBy].value;
-      if (typeof value === 'function') {
-        return value.call(item.data[sortBy], sortDirection, sortBy);
-      }
-      return value;
-    };
-
     const sortedTableData = sortBy
       ? tableData
-        .sortBy(item => getSortValue(item), humanSorter)
+        .sortBy(item => getSortValue(item, sortBy, sortDirection), humanSorter)
         .update(table =>
           sortDirection === SortDirection.DESC
             ? table.reverse()
@@ -137,7 +131,7 @@ export default class VirtualizedTableViewer extends Component {
       <div style={[styles.base, baseStyle, style]}>
         <AutoSizer>
           {({width, height}) => {
-            const tableHeight = height;
+            const tableHeight = height - TABLE_BOTTOM_CUSHION;
             return (
               <Table
                 scrollTop={resetScrollTop ? 0 : undefined} // it's needed for https://dremio.atlassian.net/browse/DX-7140

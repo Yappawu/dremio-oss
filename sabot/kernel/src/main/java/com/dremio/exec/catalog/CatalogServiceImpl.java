@@ -21,6 +21,7 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -38,14 +39,17 @@ import com.dremio.common.exceptions.UserException;
 import com.dremio.config.DremioConfig;
 import com.dremio.datastore.api.LegacyKVStore;
 import com.dremio.datastore.api.LegacyKVStoreProvider;
+import com.dremio.exec.ExecConstants;
 import com.dremio.exec.catalog.conf.ConnectionConf;
 import com.dremio.exec.catalog.conf.SourceType;
 import com.dremio.exec.ops.OptimizerRulesContext;
 import com.dremio.exec.planner.PlannerPhase;
+import com.dremio.exec.planner.physical.PlannerSettings;
 import com.dremio.exec.proto.CatalogRPC.RpcType;
 import com.dremio.exec.proto.CatalogRPC.SourceWrapper;
 import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
 import com.dremio.exec.proto.GeneralRPCProtos.Ack;
+import com.dremio.exec.proto.UserBitShared.DremioPBError.ErrorType;
 import com.dremio.exec.rpc.FutureBitCommand;
 import com.dremio.exec.rpc.RpcFuture;
 import com.dremio.exec.rpc.RpcOutcomeListener;
@@ -66,11 +70,12 @@ import com.dremio.service.namespace.NamespaceKey;
 import com.dremio.service.namespace.NamespaceNotFoundException;
 import com.dremio.service.namespace.NamespaceService;
 import com.dremio.service.namespace.SourceState;
-import com.dremio.service.namespace.SourceState.SourceStatus;
 import com.dremio.service.namespace.source.proto.MetadataPolicy;
 import com.dremio.service.namespace.source.proto.SourceConfig;
 import com.dremio.service.namespace.source.proto.SourceInternalData;
 import com.dremio.service.scheduler.Cancellable;
+import com.dremio.service.scheduler.ModifiableLocalSchedulerService;
+import com.dremio.service.scheduler.ModifiableSchedulerService;
 import com.dremio.service.scheduler.ScheduleUtils;
 import com.dremio.service.scheduler.SchedulerService;
 import com.dremio.service.users.SystemUser;
@@ -79,6 +84,7 @@ import com.dremio.services.fabric.api.FabricRunnerFactory;
 import com.dremio.services.fabric.api.FabricService;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.Futures;
@@ -105,25 +111,29 @@ public class CatalogServiceImpl implements CatalogService {
 
   public static final String CATALOG_SOURCE_DATA_NAMESPACE = "catalog-source-data";
 
-  private final Provider<SabotContext> context;
-  private final Provider<SchedulerService> scheduler;
+  protected final Provider<SabotContext> context;
+  protected final Provider<SchedulerService> scheduler;
   private final Provider<? extends Provider<ConnectionConf<?, ?>>> sysTableConfProvider;
   private final Provider<FabricService> fabric;
-  private final Provider<ConnectionReader> connectionReaderProvider;
+  protected final Provider<ConnectionReader> connectionReaderProvider;
 
-  private LegacyKVStore<NamespaceKey, SourceInternalData> sourceDataStore;
-  private NamespaceService systemNamespace;
+  protected LegacyKVStore<NamespaceKey, SourceInternalData> sourceDataStore;
+  protected NamespaceService systemNamespace;
   private PluginsManager plugins;
   private BufferAllocator allocator;
   private FabricRunnerFactory tunnelFactory;
   private CatalogProtocol protocol;
   private final Provider<BufferAllocator> bufferAllocator;
   private final Provider<LegacyKVStoreProvider> kvStoreProvider;
-  private final Provider<DatasetListingService> datasetListingService;
-  private final Provider<OptionManager> optionManager;
-  private final DremioConfig config;
-  private final EnumSet<Role> roles;
-  private final CatalogServiceMonitor monitor;
+  protected final Provider<DatasetListingService> datasetListingService;
+  protected final Provider<OptionManager> optionManager;
+  protected final Provider<MetadataRefreshInfoBroadcaster> broadcasterProvider;
+  protected final DremioConfig config;
+  protected final EnumSet<Role> roles;
+  protected final CatalogServiceMonitor monitor;
+  private final Set<String> influxSources; //will contain any sources influx(i.e actively being modified). Otherwise empty.
+  protected final Predicate<String> isInfluxSource;
+  protected ModifiableSchedulerService modifiableSchedulerService;
 
   public CatalogServiceImpl(
     Provider<SabotContext> context,
@@ -135,11 +145,12 @@ public class CatalogServiceImpl implements CatalogService {
     Provider<LegacyKVStoreProvider> kvStoreProvider,
     Provider<DatasetListingService> datasetListingService,
     Provider<OptionManager> optionManager,
+    Provider<MetadataRefreshInfoBroadcaster> broadcasterProvider,
     DremioConfig config,
     EnumSet<Role> roles
   ) {
     this(context, scheduler, sysTableConfProvider, fabric, connectionReaderProvider, bufferAllocator,
-      kvStoreProvider, datasetListingService, optionManager, config, roles, CatalogServiceMonitor.DEFAULT);
+      kvStoreProvider, datasetListingService, optionManager, broadcasterProvider, config, roles, CatalogServiceMonitor.DEFAULT);
   }
 
   @VisibleForTesting
@@ -153,6 +164,7 @@ public class CatalogServiceImpl implements CatalogService {
     Provider<LegacyKVStoreProvider> kvStoreProvider,
     Provider<DatasetListingService> datasetListingService,
     Provider<OptionManager> optionManager,
+    Provider<MetadataRefreshInfoBroadcaster> broadcasterProvider,
     DremioConfig config,
     EnumSet<Role> roles,
     final CatalogServiceMonitor monitor
@@ -166,9 +178,12 @@ public class CatalogServiceImpl implements CatalogService {
     this.kvStoreProvider = kvStoreProvider;
     this.datasetListingService = datasetListingService;
     this.optionManager = optionManager;
+    this.broadcasterProvider = broadcasterProvider;
     this.config = config;
     this.roles = roles;
     this.monitor = monitor;
+    this.influxSources = ConcurrentHashMap.newKeySet();
+    this.isInfluxSource = this::isInfluxSource;
   }
 
   @Override
@@ -176,9 +191,10 @@ public class CatalogServiceImpl implements CatalogService {
     SabotContext context = this.context.get();
     this.allocator = bufferAllocator.get().newChildAllocator("catalog-protocol", 0, Long.MAX_VALUE);
     this.systemNamespace = context.getNamespaceService(SystemUser.SYSTEM_USERNAME);
-    sourceDataStore = kvStoreProvider.get().getStore(CatalogSourceDataCreator.class);
-    this.plugins = new PluginsManager(context, systemNamespace, datasetListingService.get(), optionManager.get(), config, roles, sourceDataStore, this.scheduler.get(),
-      this.connectionReaderProvider.get(), monitor);
+    this.sourceDataStore = kvStoreProvider.get().getStore(CatalogSourceDataCreator.class);
+    this.modifiableSchedulerService = new ModifiableLocalSchedulerService(1, "modifiable-scheduler-",
+        ExecConstants.MAX_CONCURRENT_METADATA_REFRESHES, optionManager.get());
+    this.plugins = newPluginsManager();
     plugins.start();
     this.protocol =  new CatalogProtocol(allocator, new CatalogChangeListener(), config.getSabotConfig());
     tunnelFactory = fabric.get().registerProtocol(protocol);
@@ -224,9 +240,12 @@ public class CatalogServiceImpl implements CatalogService {
         wasRun.await();
       }
     }
+  }
 
-
-
+  protected PluginsManager newPluginsManager() {
+    return new PluginsManager(context.get(), systemNamespace, datasetListingService.get(), optionManager.get(),
+      config, roles, sourceDataStore, scheduler.get(), connectionReaderProvider.get(), monitor, broadcasterProvider,
+      isInfluxSource, modifiableSchedulerService);
   }
 
   private void communicateChange(SourceConfig config, RpcType rpcType) {
@@ -273,8 +292,7 @@ public class CatalogServiceImpl implements CatalogService {
     void sourceUpdate(SourceConfig config) {
       try {
         logger.debug("Received source update for [{}]", config.getName());
-
-        plugins.getSynchronized(config);
+        plugins.getSynchronized(config, isInfluxSource);
       } catch (Exception ex) {
         logger.warn("Failure while synchronizing source [{}].", config.getName(), ex);
       }
@@ -310,7 +328,7 @@ public class CatalogServiceImpl implements CatalogService {
 
   @VisibleForTesting
   public boolean refreshSource(NamespaceKey source, MetadataPolicy metadataPolicy, UpdateType updateType) throws NamespaceException {
-    ManagedStoragePlugin plugin = plugins.get(source.getRoot());
+    ManagedStoragePlugin plugin = getPlugins().get(source.getRoot());
     if (plugin == null){
       throw UserException.validationError().message("Unknown source %s", source.getRoot()).build(logger);
     } else if (MissingPluginConf.TYPE.equals(plugin.getConfig().getType())) {
@@ -322,17 +340,18 @@ public class CatalogServiceImpl implements CatalogService {
 
   @VisibleForTesting
   public void synchronizeSources() {
-    plugins.synchronizeSources();
+    getPlugins().synchronizeSources(isInfluxSource);
   }
 
   @Override
   public void close() throws Exception {
     DeferredException ex = new DeferredException();
-    if(plugins != null) {
-      ex.suppressingClose(plugins);
+    if(getPlugins() != null) {
+      ex.suppressingClose(getPlugins());
     }
     ex.suppressingClose(protocol);
     ex.suppressingClose(allocator);
+    ex.suppressingClose(modifiableSchedulerService);
     ex.close();
   }
 
@@ -351,7 +370,7 @@ public class CatalogServiceImpl implements CatalogService {
 
   public boolean createSourceIfMissingWithThrow(SourceConfig config) {
     Preconditions.checkArgument(config.getTag() == null);
-    if(!plugins.hasPlugin(config.getName())) {
+    if(!getPlugins().hasPlugin(config.getName())) {
       createSource(config, SystemUser.SYSTEM_USERNAME);
       return true;
     }
@@ -360,38 +379,53 @@ public class CatalogServiceImpl implements CatalogService {
 
   private void createSource(SourceConfig config, String userName, NamespaceAttribute... attributes) {
 
+    boolean afterUnknownEx = false;
+
     try(final AutoCloseable sourceDistributedLock = getDistributedLock(config.getName())) {
-      plugins.create(config, userName, attributes);
+      setInfluxSource(config.getName());
+      getPlugins().create(config, userName, attributes);
       communicateChange(config, RpcType.REQ_SOURCE_CONFIG);
     } catch (SourceAlreadyExistsException e) {
       throw UserException.concurrentModificationError(e).message("Source already exists with name %s.", config.getName()).buildSilently();
-    } catch(ConcurrentModificationException ex) {
+    } catch (ConcurrentModificationException ex) {
       throw ex;
-    } catch(Exception ex) {
+    } catch (Exception ex) {
+      afterUnknownEx = true;
       throw UserException.validationError(ex).message("Failed to create source with name %s.", config.getName()).buildSilently();
+    } finally {
+      removeInfluxSource(config.getName(), afterUnknownEx);
     }
   }
 
   private void updateSource(SourceConfig config, String userName, NamespaceAttribute... attributes) {
     Preconditions.checkArgument(config.getTag() != null);
+    boolean afterUnknownEx = false;
 
-    try(final AutoCloseable sourceDistributedLock = getDistributedLock(config.getName());) {
-      ManagedStoragePlugin plugin = plugins.get(config.getName());
-      if(plugin == null) {
+    try (final AutoCloseable sourceDistributedLock = getDistributedLock(config.getName());) {
+      setInfluxSource(config.getName());
+      ManagedStoragePlugin plugin = getPlugins().get(config.getName());
+      if (plugin == null) {
         throw UserException.concurrentModificationError().message("Source not found.").buildSilently();
+      }
+      final String srcType = plugin.getConfig().getType();
+      if (("HOME".equalsIgnoreCase(srcType)) || ("INTERNAL".equalsIgnoreCase(srcType)) || ("ACCELERATION".equalsIgnoreCase(srcType))) {
+        config.setAllowCrossSourceSelection(true);
       }
       plugin.updateSource(config, userName, attributes);
       communicateChange(config, RpcType.REQ_SOURCE_CONFIG);
     } catch (ConcurrentModificationException ex) {
       throw ex;
     } catch (Exception ex) {
+      afterUnknownEx = true;
       throw UserException.validationError(ex).message("Failed to update source with name %s.", config.getName()).buildSilently();
+    } finally {
+      removeInfluxSource(config.getName(), afterUnknownEx);
     }
   }
 
   @VisibleForTesting
   public void deleteSource(String name) {
-    ManagedStoragePlugin plugin = plugins.get(name);
+    ManagedStoragePlugin plugin = getPlugins().get(name);
     if(plugin == null) {
       return;
     }
@@ -407,18 +441,24 @@ public class CatalogServiceImpl implements CatalogService {
    */
   private void deleteSource(SourceConfig config, String userName) {
     NamespaceService namespaceService = context.get().getNamespaceService(userName);
+    boolean afterUnknownEx = false;
 
     try (AutoCloseable l = getDistributedLock(config.getName()) ) {
-      if(!plugins.closeAndRemoveSource(config)) {
+      setInfluxSource(config.getName());
+      if(!getPlugins().closeAndRemoveSource(config)) {
         throw UserException.invalidMetadataError().message("Unable to remove source as the provided definition is out of date.").buildSilently();
       }
 
       namespaceService.deleteSource(config.getKey(), config.getTag());
       sourceDataStore.delete(config.getKey());
     } catch (RuntimeException ex) {
+      afterUnknownEx = true;
       throw ex;
     } catch (Exception ex) {
+      afterUnknownEx = true;
       throw UserException.validationError(ex).message("Failure deleting source [%s].", config.getName()).build(logger);
+    } finally {
+      removeInfluxSource(config.getName(), afterUnknownEx);
     }
 
     communicateChange(config, RpcType.REQ_DEL_SOURCE);
@@ -443,7 +483,7 @@ public class CatalogServiceImpl implements CatalogService {
    * @return Plugin with a matching id.
    */
   private ManagedStoragePlugin getPlugin(StoragePluginId id) {
-    ManagedStoragePlugin plugin = plugins.get(id.getName());
+    ManagedStoragePlugin plugin = getPlugins().get(id.getName());
 
     // plugin.matches() here grabs the plugin read lock, guaranteeing that the plugin already exists and has been started
     if(plugin != null && plugin.matches(id.getConfig())) {
@@ -452,24 +492,38 @@ public class CatalogServiceImpl implements CatalogService {
 
     try {
       logger.debug("Source [{}] does not exist/match the one in-memory, synchronizing from id", id.getName());
-      return plugins.getSynchronized(id.getConfig());
+      if (isInfluxSource(id.getName())) {
+        throw UserException.validationError()
+          .message("Source [%s] is being modified. Try again.", id.getName())
+          .build(logger);
+      }
+      return getPlugins().getSynchronized(id.getConfig(), isInfluxSource);
     } catch (Exception e) {
       throw UserException.validationError(e).message("Failure getting source [%s].", id.getName()).build(logger);
     }
   }
 
   private ManagedStoragePlugin getPlugin(String name, boolean errorOnMissing) {
-    ManagedStoragePlugin plugin = plugins.get(name);
+    ManagedStoragePlugin plugin = getPlugins().get(name);
     if(plugin != null) {
       return plugin;
     }
 
-    try{
+    try {
       logger.debug("Synchronizing source [{}] with namespace", name);
+      if (isInfluxSource(name)) {
+        if (!errorOnMissing) {
+          return null;
+        }
+        throw UserException.validationError()
+          .message("Source [%s] is being modified. Try again.", name)
+          .build(logger);
+
+      }
       SourceConfig config = systemNamespace.getSource(new NamespaceKey(name));
-      return plugins.getSynchronized(config);
+      return getPlugins().getSynchronized(config, isInfluxSource);
     } catch (NamespaceNotFoundException ex) {
-      if(!errorOnMissing) {
+      if (!errorOnMissing) {
         return null;
       }
       throw UserException.validationError().message("Tried to access non-existent source [%s].", name).build(logger);
@@ -480,7 +534,7 @@ public class CatalogServiceImpl implements CatalogService {
 
   @VisibleForTesting
   public ManagedStoragePlugin getManagedSource(String name) {
-    return plugins.get(name);
+    return getPlugins().get(name);
   }
 
   @SuppressWarnings("unchecked")
@@ -506,27 +560,59 @@ public class CatalogServiceImpl implements CatalogService {
     return (T) getPlugin(name, true).unwrap(StoragePlugin.class);
   }
 
+  private boolean isInfluxSource(String source) {
+    return influxSources.contains(source);
+  }
+
+  private void setInfluxSource(String sourceName) {
+    // This is executing inside a Distributed Java semaphore on sourceNameso no one else could have added it
+    Preconditions.checkArgument(influxSources.add(sourceName));
+  }
+
+  private void removeInfluxSource(String sourceName, boolean skipPreCheck) {
+    if (!skipPreCheck) {
+      //skip precheck if this is called after an exception
+      Preconditions.checkArgument(!influxSources.isEmpty() && influxSources.contains(sourceName));
+    }
+    // This is executing inside a Distributed Java semaphore on sourceNameso no one else could have removed it
+    if (!influxSources.remove(sourceName)) {
+      logger.debug("Tried to remove source {} from influxSources. But it was missing. ", sourceName);
+    }
+  }
+
   @Override
   public Catalog getCatalog(MetadataRequestOptions requestOptions) {
     Preconditions.checkNotNull(requestOptions,  "request options are required");
 
-    final Catalog catalog = new CatalogImpl(
+    final Catalog decoratedCatalog = SourceAccessChecker.secureIfNeeded(requestOptions, createCatalog(requestOptions));
+    return new CachingCatalog(decoratedCatalog);
+  }
+
+  protected Catalog createCatalog(MetadataRequestOptions requestOptions) {
+    OptionManager optionManager = requestOptions.getSchemaConfig().getOptions();
+    if (optionManager == null) {
+      optionManager = context.get().getOptionManager();
+    }
+
+    return new CatalogImpl(
       requestOptions,
       new Retriever(),
       new SourceModifier(requestOptions.getSchemaConfig().getUserName()),
-      context.get().getOptionManager(),
+      optionManager,
       context.get().getNamespaceService(SystemUser.SYSTEM_USERNAME),
       context.get().getNamespaceServiceFactory(),
       context.get().getDatasetListing(),
       context.get().getViewCreatorFactoryProvider().get());
-
-    final Catalog decoratedCatalog = SourceAccessChecker.secureIfNeeded(requestOptions, catalog);
-    return new CachingCatalog(decoratedCatalog);
   }
 
   @Override
   public boolean isSourceConfigMetadataImpacting(SourceConfig config) {
-    return plugins.get(config.getName()).isSourceConfigMetadataImpacting(config);
+    return getPlugins().get(config.getName()).isSourceConfigMetadataImpacting(config);
+  }
+
+  @Override
+  public boolean isComplexTypeSupport() {
+    return optionManager.get().getOption(PlannerSettings.FULL_NESTED_SCHEMA_SUPPORT);
   }
 
   private class Retriever implements PluginRetriever {
@@ -538,7 +624,7 @@ public class CatalogServiceImpl implements CatalogService {
 
       if (!synchronizeOnMissing) {
         // get from in-memory
-        return plugins.get(pluginName);
+        return getPlugins().get(pluginName);
       }
       // if plugin is missing in-memory, we will synchronize to kvstore
       return CatalogServiceImpl.this.getPlugin(pluginName, true);
@@ -552,12 +638,24 @@ public class CatalogServiceImpl implements CatalogService {
     final Set<SourceType> types = new HashSet<>();
 
     try {
-      for(ManagedStoragePlugin plugin : plugins.managed()){
-        if(plugin.getState().getStatus() == SourceStatus.bad) {
+      for (ManagedStoragePlugin plugin : getPlugins().managed()) {
+        // we want to check state without acquiring a read lock
+        if (plugin.getState().getStatus() == SourceState.SourceStatus.bad) {
           // we shouldn't consider rules for misbehaving plugins.
           continue;
         }
-        final StoragePluginId pluginId = plugin.getId();
+
+        StoragePluginId pluginId;
+        try {
+          // getId has a check for plugin state
+          pluginId = plugin.getId();
+        } catch (UserException e) {
+          if (e.getErrorType() == ErrorType.SOURCE_BAD_STATE) {
+            // we shouldn't consider rules for misbehaving plugins.
+            continue;
+          }
+          throw e;
+        }
 
         StoragePluginRulesFactory factory = plugin.getRulesFactory();
         if(factory != null) {
@@ -583,6 +681,11 @@ public class CatalogServiceImpl implements CatalogService {
     return getCatalog(MetadataRequestOptions.of(SchemaConfig.newBuilder(SystemUser.SYSTEM_USERNAME).build()));
   }
 
+  @VisibleForTesting
+  PluginsManager getPlugins() {
+    return plugins;
+  }
+
   public enum UpdateType {
     NAMES, FULL, NONE
   }
@@ -598,7 +701,17 @@ public class CatalogServiceImpl implements CatalogService {
       this.userName = userName;
     }
 
+    public SourceModifier cloneWith(String userName) {
+      return new SourceModifier(userName);
+    }
+
     public <T extends StoragePlugin> T getSource(String name) {
+      try {
+        // Check userNamespace to resolve permissions since CatalogServiceImpl does not
+        CatalogServiceImpl.this.context.get().getNamespaceService(userName).getSource(new NamespaceKey(name));
+      } catch (NamespaceException ignored) {
+        // Other errors should be handled by call to CatalogService
+      }
       return CatalogServiceImpl.this.getSource(name);
     }
 

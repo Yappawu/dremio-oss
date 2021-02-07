@@ -16,6 +16,8 @@
 package com.dremio.exec.store.hive;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -46,6 +48,7 @@ import com.dremio.exec.planner.common.ScanRelBase;
 import com.dremio.exec.planner.logical.EmptyRel;
 import com.dremio.exec.planner.logical.Rel;
 import com.dremio.exec.planner.logical.RelOptHelper;
+import com.dremio.exec.planner.logical.partition.PruneScanRuleBase;
 import com.dremio.exec.planner.logical.partition.PruneScanRuleBase.PruneScanRuleFilterOnProject;
 import com.dremio.exec.planner.logical.partition.PruneScanRuleBase.PruneScanRuleFilterOnScan;
 import com.dremio.exec.planner.physical.PhysicalPlanCreator;
@@ -187,6 +190,24 @@ public class HiveRulesFactory implements StoragePluginRulesFactory {
     public RelNode applyDatasetPointer(TableMetadata newDatasetPointer) {
       return new HiveScanDrel(getCluster(), traitSet, new RelOptNamespaceTable(newDatasetPointer, getCluster()),
         pluginId, newDatasetPointer, getProjectedColumns(), observedRowcountAdjustment, filter, readerType);
+    }
+
+    @Override
+    public HiveScanDrel cloneWithProject(List<SchemaPath> projection, boolean preserveFilterColumns) {
+      if (filter != null && preserveFilterColumns) {
+        final List<SchemaPath> newProjection = new ArrayList<>(projection);
+        final Set<SchemaPath> projectionSet = new HashSet<>(projection);
+        final List<SchemaPath> paths = filter.getPaths();
+        if (paths != null) {
+          for (SchemaPath col : paths) {
+            if (!projectionSet.contains(col)) {
+              newProjection.add(col);
+            }
+          }
+          return cloneWithProject(newProjection);
+        }
+      }
+      return cloneWithProject(projection);
     }
 
     @Override
@@ -352,6 +373,7 @@ public class HiveRulesFactory implements StoragePluginRulesFactory {
         if (plannerSettings.isPartitionPruningEnabled()) {
           builder.add(new PruneScanRuleFilterOnProject<>(pluginId, HiveScanDrel.class, optimizerContext));
           builder.add(new PruneScanRuleFilterOnScan<>(pluginId, HiveScanDrel.class, optimizerContext));
+          builder.add(new PruneScanRuleBase.PruneScanRuleFilterOnSampleScan<>(pluginId, HiveScanDrel.class, optimizerContext));
         }
 
         final HiveSettings hiveSettings = new HiveSettings(plannerSettings.getOptions());

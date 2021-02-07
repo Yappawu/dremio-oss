@@ -25,6 +25,7 @@ import java.util.List;
 import org.apache.arrow.flatbuf.Buffer;
 import org.apache.arrow.flatbuf.FieldNode;
 import org.apache.arrow.flatbuf.RecordBatch;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.util.LargeMemoryUtil;
 import org.apache.arrow.vector.AllocationHelper;
@@ -32,6 +33,7 @@ import org.apache.arrow.vector.BufferLayout;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.TypeLayout;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.compression.NoCompressionCodec;
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -45,8 +47,6 @@ import com.dremio.sabot.op.receiver.RawFragmentBatch;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.FluentIterable;
-
-import io.netty.buffer.ArrowBuf;
 
 
 /**
@@ -131,7 +131,7 @@ public class ArrowRecordBatchLoader implements VectorAccessible, Iterable<Vector
       throw new IOException("Cannot currently deserialize record batches over 2GB");
     }
     ArrowRecordBatch arrowRecordBatch =
-      new ArrowRecordBatch((int)recordBatchFB.length(), nodes, buffers, false);
+      new ArrowRecordBatch((int)recordBatchFB.length(), nodes, buffers, NoCompressionCodec.DEFAULT_BODY_COMPRESSION, false);
     for (ArrowBuf buf : buffers) {
       buf.release();
     }
@@ -165,8 +165,7 @@ public class ArrowRecordBatchLoader implements VectorAccessible, Iterable<Vector
   }
 
   private static void loadBuffers(FieldVector vector, Field field, Iterator<ArrowBuf> buffers, Iterator<ArrowFieldNode> nodes) {
-    checkArgument(nodes.hasNext(),
-        "no more field nodes for for field " + field + " and vector " + vector);
+    checkArgument(nodes.hasNext(), "no more field nodes for for field %s and vector %s", field, vector);
     ArrowFieldNode fieldNode = nodes.next();
     List<BufferLayout> bufferLayouts = TypeLayout.getTypeLayout(field.getType()).getBufferLayouts();
     List<ArrowBuf> ownBuffers = new ArrayList<>(bufferLayouts.size());

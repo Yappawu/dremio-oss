@@ -91,6 +91,7 @@ import com.dremio.service.namespace.source.proto.SourceConfig;
 import com.dremio.service.namespace.space.proto.FolderConfig;
 import com.dremio.service.namespace.space.proto.HomeConfig;
 import com.dremio.service.namespace.space.proto.SpaceConfig;
+import com.dremio.service.users.SystemUser;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -719,7 +720,7 @@ public class CatalogServiceHelper {
 
       List<String> path = dataset.getPath();
 
-      View view = new View(path.get(path.size() - 1), dataset.getSql(), Collections.emptyList(), null, virtualDataset.getContextList());
+      View view = new View(path.get(path.size() - 1), dataset.getSql(), Collections.emptyList(), null, virtualDataset.getContextList(), false);
       catalog.updateView(namespaceKey, view, attributes);
     }
   }
@@ -746,7 +747,7 @@ public class CatalogServiceHelper {
 
       case PHYSICAL_DATASET_HOME_FILE:
       case PHYSICAL_DATASET_HOME_FOLDER: {
-        deleteHomeDataset(config, version);
+        deleteHomeDataset(config, version, config.getFullPathList());
         break;
       }
 
@@ -761,10 +762,13 @@ public class CatalogServiceHelper {
     }
   }
 
-  public void deleteHomeDataset(DatasetConfig config, String version) throws IOException, NamespaceException {
+  public void deleteHomeDataset(DatasetConfig config, String version, List<String> pathComponents) throws IOException, NamespaceException {
     FileConfig formatSettings = config.getPhysicalDataset().getFormatSettings();
-    homeFileTool.deleteFile(formatSettings.getLocation());
-    namespaceService.deleteDataset(new NamespaceKey(config.getFullPathList()), version);
+    Preconditions.checkArgument(pathComponents != null && !pathComponents.isEmpty(), "Cannot find path to dataset");
+    if (homeFileTool.fileExists(formatSettings.getLocation())) {
+      homeFileTool.deleteFile(formatSettings.getLocation());
+    }
+    namespaceService.deleteDataset(new NamespaceKey(pathComponents), version);
   }
 
   public void removeFormatFromDataset(DatasetConfig config, String version) {
@@ -806,7 +810,7 @@ public class CatalogServiceHelper {
       throw new ConcurrentModificationException(String.format("A space with the name [%s] already exists.", spaceName));
     }
 
-    namespaceService.addOrUpdateSpace(namespaceKey, getSpaceConfig(space), attributes);
+    namespaceService.addOrUpdateSpace(namespaceKey, getSpaceConfig(space).setCtime(System.currentTimeMillis()), attributes);
 
     return getSpaceFromConfig(namespaceService.getSpace(namespaceKey), null);
   }
@@ -817,7 +821,7 @@ public class CatalogServiceHelper {
 
     Preconditions.checkArgument(space.getName().equals(spaceConfig.getName()), "Space name is immutable.");
 
-    namespaceService.addOrUpdateSpace(namespaceKey, getSpaceConfig(space), attributes);
+    namespaceService.addOrUpdateSpace(namespaceKey, getSpaceConfig(space).setCtime(spaceConfig.getCtime()), attributes);
   }
 
   protected void deleteSpace(SpaceConfig spaceConfig, String version) throws NamespaceException {
@@ -1176,6 +1180,13 @@ public class CatalogServiceHelper {
     return resultList
       .map(CatalogItem.Builder::build)
       .collect(Collectors.toList());
+  }
+
+  public void createHomeSpace(String userName) {
+    try {
+      CatalogServiceHelper.ensureUserHasHomespace(sabotContext.getNamespaceService(SystemUser.SYSTEM_USERNAME), userName);
+    } catch (NamespaceException ignored) {
+    }
   }
 
   public static void ensureUserHasHomespace(NamespaceService namespaceService, String userName) throws NamespaceException {

@@ -17,6 +17,7 @@ package com.dremio.exec.store;
 
 import java.util.List;
 
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.calcite.plan.Convention;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.plan.RelOptTable.ToRelContext;
@@ -52,9 +53,11 @@ public class NamespaceTable implements DremioTable {
   public static final ImmutableSet<String> SYSTEM_COLUMNS = ImmutableSet.of(IncrementalUpdateUtils.UPDATE_COLUMN);
 
   private final TableMetadata dataset;
+  private final boolean complexTypeSupport;
 
-  public NamespaceTable(TableMetadata dataset) {
+  public NamespaceTable(TableMetadata dataset, boolean complexTypeSupport) {
     this.dataset = Preconditions.checkNotNull(dataset);
+    this.complexTypeSupport = complexTypeSupport;
   }
 
   @Override
@@ -64,7 +67,8 @@ public class NamespaceTable implements DremioTable {
 
   @Override
   public RelDataType getRowType(RelDataTypeFactory relDataTypeFactory) {
-    return CalciteArrowHelper.wrap(dataset.getSchema()).toCalciteRecordType(relDataTypeFactory, SYSTEM_COLUMNS);
+    return CalciteArrowHelper.wrap(dataset.getSchema())
+      .toCalciteRecordType(relDataTypeFactory, (Field f) -> !SYSTEM_COLUMNS.contains(f.getName()), complexTypeSupport);
   }
 
   public TableMetadata getDataset() {

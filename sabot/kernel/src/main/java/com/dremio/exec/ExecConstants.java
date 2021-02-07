@@ -23,6 +23,7 @@ import com.dremio.exec.testing.ExecutionControls;
 import com.dremio.options.OptionValidator;
 import com.dremio.options.Options;
 import com.dremio.options.TypeValidators;
+import com.dremio.options.TypeValidators.AdminBooleanValidator;
 import com.dremio.options.TypeValidators.BooleanValidator;
 import com.dremio.options.TypeValidators.DoubleValidator;
 import com.dremio.options.TypeValidators.EnumValidator;
@@ -51,7 +52,7 @@ public interface ExecConstants {
   String USER_SERVER_RPC_THREADS = "dremio.exec.rpc.user.server.threads";
   String REGISTRATION_ADDRESS = "dremio.exec.rpc.publishedhost";
 
-  /** incoming buffer size (number of batches) */
+  /* incoming buffer size (number of batches) */
   String INCOMING_BUFFER_SIZE = "dremio.exec.buffer.size";
   String SPOOLING_BUFFER_DELETE = "dremio.exec.buffer.spooling.delete";
   String SPOOLING_BUFFER_SIZE = "dremio.exec.buffer.spooling.size";
@@ -59,7 +60,7 @@ public interface ExecConstants {
   String SPILL_DIRS = "dremio.exec.sort.external.spill.directories";
   String HTTP_ENABLE = "dremio.exec.http.enabled";
 
-  /** Spill disk space configurations */
+  /* Spill disk space configurations */
   BooleanValidator SPILL_ENABLE_HEALTH_CHECK = new BooleanValidator("dremio.exec.spill.healthcheck.enable", DefaultSpillServiceOptions.ENABLE_HEALTH_CHECK);
   PositiveLongValidator SPILL_DISK_SPACE_CHECK_INTERVAL = new PositiveLongValidator("dremio.exec.spill.check.interval", Integer.MAX_VALUE, DefaultSpillServiceOptions.HEALTH_CHECK_INTERVAL);
   PositiveLongValidator SPILL_DISK_SPACE_LIMIT_BYTES = new PositiveLongValidator("dremio.exec.spill.limit.bytes", Long.MAX_VALUE, DefaultSpillServiceOptions.MIN_DISK_SPACE_BYTES);
@@ -77,8 +78,7 @@ public interface ExecConstants {
   // Splits are enabled when this is set to true and QUERY_EXEC_OPTION is set to Gandiva
   BooleanValidator SPLIT_ENABLED = new BooleanValidator("exec.expression.split.enabled", true);
 
-  String MAX_SPLITS_PER_EXPR_KEY = "exec.expression" +
-    ".split.max_splits_per_expression";
+  String MAX_SPLITS_PER_EXPR_KEY = "exec.expression.split.max_splits_per_expression";
   PositiveLongValidator MAX_SPLITS_PER_EXPRESSION = new PositiveLongValidator(MAX_SPLITS_PER_EXPR_KEY, Long.MAX_VALUE, 10);
 
   // Configuration option for deciding how much work should be done in Gandiva when there are excessive splits
@@ -90,6 +90,11 @@ public interface ExecConstants {
   PositiveLongValidator MAX_FOREMEN_PER_COORDINATOR = new PositiveLongValidator("coordinator.alive_queries.limit", Long.MAX_VALUE, 1000);
 
   BooleanValidator REST_API_RUN_QUERY_ASYNC = new BooleanValidator("dremio.coordinator.rest.run_query.async", false);
+
+  // max number of concurrent metadata refresh in progress.
+  PositiveLongValidator MAX_CONCURRENT_METADATA_REFRESHES = new PositiveLongValidator("coordinator.metadata.refreshes.concurrency",
+                                                                                      Integer.MAX_VALUE,
+                                                                                      24);
 
   // Whether or not to replace a group of ORs with a set operation.
   BooleanValidator FAST_OR_ENABLE = new BooleanValidator("exec.operator.orfast", true);
@@ -105,12 +110,7 @@ public interface ExecConstants {
 
   PositiveLongValidator CODE_GEN_NESTED_METHOD_THRESHOLD = new PositiveLongValidator("exec.operator.codegen.nested_method.threshold", Integer.MAX_VALUE, 100);
 
-
-  String JDBC_ROW_COUNT_QUERY_TIMEOUT = "store.jdbc.row_count_query_timeout_seconds";
-  LongValidator JDBC_ROW_COUNT_QUERY_TIMEOUT_VALIDATOR = new PositiveLongValidator(JDBC_ROW_COUNT_QUERY_TIMEOUT, Integer.MAX_VALUE, 5);
-
-
-  /**
+  /*
    * Currently if a query is cancelled, but one of the fragments reports the status as FAILED instead of CANCELLED or
    * FINISHED we report the query result as CANCELLED by swallowing the failures occurred in fragments. This BOOT
    * setting allows the user to see the query status as failure. Useful for developers/testers.
@@ -128,8 +128,6 @@ public interface ExecConstants {
 
   String OPERATOR_TARGET_BATCH_BYTES = "dremio.exec.operator_batch_bytes";
   OptionValidator OPERATOR_TARGET_BATCH_BYTES_VALIDATOR = new LongValidator(OPERATOR_TARGET_BATCH_BYTES, 10*1024*1024);
-
-
 
   BooleanValidator ENABLE_VECTORIZED_HASHAGG = new BooleanValidator("exec.operator.aggregate.vectorize", true);
   BooleanValidator ENABLE_VECTORIZED_HASHJOIN = new BooleanValidator("exec.operator.join.vectorize", true);
@@ -163,8 +161,7 @@ public interface ExecConstants {
   String PARQUET_MEMORY_THRESHOLD = "store.parquet.memory_threshold";
   LongValidator PARQUET_MEMORY_THRESHOLD_VALIDATOR = new LongValidator(PARQUET_MEMORY_THRESHOLD, 512*1024*1024);
 
-  LongValidator PARQUET_MAX_PARTITION_COLUMNS_VALIDATOR = new RangeLongValidator("store.parquet" +
-    ".partition_column_limit", 0, 500, 25);
+  LongValidator PARQUET_MAX_PARTITION_COLUMNS_VALIDATOR = new RangeLongValidator("store.parquet.partition_column_limit", 0, 500, 25);
 
   BooleanValidator PARQUET_ELIMINATE_NULL_PARTITIONS = new BooleanValidator("store.parquet.exclude_null_implicit_partitions", true);
 
@@ -227,14 +224,9 @@ public interface ExecConstants {
   OptionValidator MONGO_BSON_RECORD_READER_VALIDATOR = new BooleanValidator(MONGO_BSON_RECORD_READER, true);
 
   /* Mongo Rules */
-  BooleanValidator MONGO_RULES_AGGREGATE = new BooleanValidator("store.mongo.enable_aggregate_rule", false);
   BooleanValidator MONGO_RULES_FILTER = new BooleanValidator("store.mongo.enable_filter_rule", true);
-  BooleanValidator MONGO_RULES_FLATTEN = new BooleanValidator("store.mongo.enable_flatten_rule", false);
-  BooleanValidator MONGO_RULES_LIMIT = new BooleanValidator("store.mongo.enable_limit_rule", false);
   BooleanValidator MONGO_RULES_SORT = new BooleanValidator("store.mongo.enable_sort_rule", false);
   BooleanValidator MONGO_RULES_PROJECT = new BooleanValidator("store.mongo.enable_project_rule", true);
-  BooleanValidator MONGO_RULES_TOPN = new BooleanValidator("store.mongo.enable_topn_rule", false);
-  BooleanValidator MONGO_RULES_SAMPLE = new BooleanValidator("store.mongo.enable_sample_rule", false);
 
   /* Elastic Rules */
   BooleanValidator ELASTIC_RULES_AGGREGATE = new BooleanValidator("store.elastic.enable_aggregate_rule", true);
@@ -245,6 +237,9 @@ public interface ExecConstants {
   BooleanValidator ELASTIC_RULES_SAMPLE = new BooleanValidator("store.elastic.enable_sample_rule", true);
 
   BooleanValidator ELASTIC_ENABLE_MAPPING_CHECKSUM = new BooleanValidator("store.elastic.enable_mapping_checksum", true);
+
+  String ELASTIC_ACTION_RETRIES = "store.elastic.action_retries";
+  LongValidator ELASTIC_ACTION_RETRIES_VALIDATOR = new LongValidator(ELASTIC_ACTION_RETRIES, 0);
 
   BooleanValidator ENABLE_UNION_TYPE = new BooleanValidator("exec.enable_union_type", true);
 
@@ -361,9 +356,16 @@ public interface ExecConstants {
 
   BooleanValidator DEBUG_QUERY_PROFILE = new BooleanValidator("dremio.profile.debug_columns", false);
 
+  BooleanValidator SCAN_COMPUTE_LOCALITY = new BooleanValidator("exec.operator.scan.compute_locality", false);
+
   PositiveLongValidator LAYOUT_REFRESH_MAX_ATTEMPTS = new PositiveLongValidator("layout.refresh.max.attempts", Integer.MAX_VALUE, 3);
 
   BooleanValidator OLD_ASSIGNMENT_CREATOR = new BooleanValidator("exec.work.assignment.old", false);
+
+  /**
+   * If set to true, soft affinity will be ignored for leaf fragments during parallelization.
+   */
+  BooleanValidator SHOULD_IGNORE_LEAF_AFFINITY = new BooleanValidator("planner.assignment.ignore_leaf_affinity", false);
 
   /**
    * This factor determines how much larger the load for a given slice can be than the expected size in order to maintain locality
@@ -383,7 +385,8 @@ public interface ExecConstants {
   BooleanValidator PARQUET_COLUMN_ORDERING = new BooleanValidator("store.parquet.column_ordering", false);
 
   BooleanValidator HIVE_COMPLEXTYPES_ENABLED = new BooleanValidator("store.hive.parquet.support_complex_types", true);
-  LongValidator PARQUET_LIST_ITEMS_THRESHOLD = new LongValidator("store.parquet.list_items.threshold", 128);
+  String PARQUET_LIST_ITEMS_KEY = "store.parquet.list_items.threshold";
+  LongValidator PARQUET_LIST_ITEMS_THRESHOLD = new LongValidator(PARQUET_LIST_ITEMS_KEY, 128);
 
   LongValidator RESULTS_MAX_AGE_IN_DAYS = new LongValidator("results.max.age_in_days", 1);
   // At what hour of the day to do job results cleanup - 0-23
@@ -404,10 +407,13 @@ public interface ExecConstants {
   PositiveLongValidator PLANNER_IN_SUBQUERY_THRESHOLD = new PositiveLongValidator("planner.in.subquery.threshold", Character.MAX_VALUE, 20);
 
   BooleanValidator EXTERNAL_SORT_COMPRESS_SPILL_FILES = new BooleanValidator("exec.operator.sort.external.compress_spill_files", true);
-
   BooleanValidator EXTERNAL_SORT_ENABLE_SPLAY_SORT = new BooleanValidator("exec.operator.sort.external.enable_splay_sort", false);
-
   BooleanValidator EXTERNAL_SORT_ENABLE_MICRO_SPILL = new BooleanValidator("exec.operator.sort.external.enable_micro_spill", true);
+  PositiveLongValidator SORT_MAX_WRITE_BATCH = new PositiveLongValidator("exec.operator.sort.external.spill_batch_records", Character.MAX_VALUE, Character.MAX_VALUE);
+  BooleanValidator EXTERNAL_SORT_ARROW_ENCODING = new BooleanValidator("exec.operator.sort.external.arrow_encoding", true);
+  BooleanValidator EXTERNAL_SORT_DIRECT_WRITE = new BooleanValidator("exec.operator.sort.external.direct_write", true);
+  BooleanValidator EXTERNAL_SORT_VECTOR_COPIER = new BooleanValidator("exec.operator.sort.external.vector_copier", true);
+  DoubleValidator EXTERNAL_SORT_SPILL_ALLOCATION_DENSITY = new RangeDoubleValidator("exec.operator.sort.external.spill.allocation_density", 0.0, Double.MAX_VALUE, 0.01);
 
   PositiveLongValidator EXTERNAL_SORT_BATCHSIZE_MULTIPLIER = new PositiveLongValidator("exec.operator.sort.external.batchsize_multiplier", Character.MAX_VALUE, 2);
 
@@ -415,12 +421,16 @@ public interface ExecConstants {
   PositiveLongValidator LAST_SEARCH_REINDEX  = new PositiveLongValidator("dac.search.last_reindex",  Long.MAX_VALUE, 0);
   PositiveLongValidator SEARCH_MANAGER_REFRESH_MILLIS  = new PositiveLongValidator("dac.search.refresh",  Long.MAX_VALUE, TimeUnit.MINUTES.toMillis(1));
 
+  // this option sets the frequency of task leader refresh for the executor selectors
+  PositiveLongValidator EXEC_SELECTOR_TASK_LEADER_REFRESH_MILLIS  = new PositiveLongValidator("exec.selection.refresh",  Long.MAX_VALUE, TimeUnit.MINUTES.toMillis(1));
+
+  TypeValidators.PositiveLongValidator EXEC_SELECTOR_RELEASE_LEADERSHIP_MS =
+    new TypeValidators.PositiveLongValidator("exec.selection.leadership.ms", Long.MAX_VALUE, TimeUnit.HOURS
+      .toMillis(12));
+
   //this option sets the capacity of an ArrowBuf in SlicedBufferManager from which various buffers may be sliced.
   PowerOfTwoLongValidator BUF_MANAGER_CAPACITY = new PowerOfTwoLongValidator("exec.sliced_bufmgr.capacity", 1 << 24, 1 << 16);
 
-  TypeValidators.PositiveLongValidator TOKEN_RELEASE_LEADERSHIP_MS =
-    new TypeValidators.PositiveLongValidator("token.release.leadership.ms", Long.MAX_VALUE, TimeUnit.HOURS.toMillis
-      (40));
   TypeValidators.PositiveLongValidator VOTING_RELEASE_LEADERSHIP_MS =
     new TypeValidators.PositiveLongValidator("vote.release.leadership.ms", Long.MAX_VALUE, TimeUnit.HOURS.toMillis
       (35));
@@ -433,12 +443,20 @@ public interface ExecConstants {
     new TypeValidators.PositiveLongValidator("searchservice.release.leadership.ms", Long.MAX_VALUE, TimeUnit.HOURS
       .toMillis(12));
 
-  public static final BooleanValidator ENABLE_VECTORIZED_NOSPILL_VARCHAR_NDV_ACCUMULATOR = new BooleanValidator("exec.operator.vectorized_nospill.varchar_ndv", true);
+  BooleanValidator ENABLE_VECTORIZED_NOSPILL_VARCHAR_NDV_ACCUMULATOR = new BooleanValidator("exec.operator.vectorized_nospill.varchar_ndv", true);
 
-  BooleanValidator ENABLE_HEAP_MONITORING = new BooleanValidator("exec.heap.monitoring.enable", true);
-  RangeLongValidator HEAP_MONITORING_CLAWBACK_THRESH_PERCENTAGE = new RangeLongValidator("exec.heap.monitoring.thresh.percentage", 50, 100, 85);
+  BooleanValidator TRIM_ROWGROUPS_FROM_FOOTER = new BooleanValidator("exec.parquet.memory.trim_rowgroups", true);
+  BooleanValidator TRIM_COLUMNS_FROM_ROW_GROUP = new BooleanValidator("exec.parquet.memory.trim_columns", true);
+
+  AdminBooleanValidator EXECUTOR_ENABLE_HEAP_MONITORING = new AdminBooleanValidator("exec.heap.monitoring.enable", true);
+  RangeLongValidator EXECUTOR_HEAP_MONITORING_CLAWBACK_THRESH_PERCENTAGE = new RangeLongValidator("exec.heap.monitoring.thresh.percentage", 50, 100, 85);
+
+  AdminBooleanValidator COORDINATOR_ENABLE_HEAP_MONITORING = new AdminBooleanValidator("coordinator.heap.monitoring.enable", true);
+  RangeLongValidator COORDINATOR_HEAP_MONITORING_CLAWBACK_THRESH_PERCENTAGE = new RangeLongValidator("coordinator.heap.monitoring.thresh.percentage", 50, 100, 85);
 
   BooleanValidator ENABLE_ICEBERG = new BooleanValidator("dremio.iceberg.enabled", false);
+
+  BooleanValidator ENABLE_DELTALAKE = new BooleanValidator("dremio.deltalake.enabled", false);
 
   // warning threshold for running time of a task
   PositiveLongValidator SLICING_WARN_MAX_RUNTIME_MS = new PositiveLongValidator("dremio.sliced.warn_max_runtime", Long.MAX_VALUE, 120000);
@@ -451,4 +469,30 @@ public interface ExecConstants {
 
   // global hive-async option
   BooleanValidator ENABLE_HIVE_ASYNC = new TypeValidators.BooleanValidator("store.hive.async", true);
+
+  BooleanValidator ENABLE_REMOTE_JOB_FETCH = new BooleanValidator("jobs.remote.fetch_enabled", true);
+
+  DoubleValidator EXPR_COMPLEXITY_NO_OPTIMIZE_THRESHOLD = new DoubleValidator("exec.expression.complexity.no_optimize.threshold", 2000.00);
+
+  BooleanValidator ENABLE_BOOSTING = new BooleanValidator("exec.storage.enable_arrow_caching", true);
+  BooleanValidator ENABLE_BOOST_FILTERING_READER = new BooleanValidator("exec.storage.enable_arrow_filtering_reader", true);
+  BooleanValidator ENABLE_BOOST_DELTA_READER = new BooleanValidator("exec.storage.enable_arrow_delta_reader", true);
+
+  // hive parallelism and timeout options for signature validation process
+  LongValidator HIVE_SIGNATURE_VALIDATION_PARALLELISM = new TypeValidators.RangeLongValidator("store.hive.signature_validation.parallelism", 1, 32, 16);
+  LongValidator HIVE_SIGNATURE_VALIDATION_TIMEOUT_MS = new TypeValidators.LongValidator("store.hive.signature_validation.timeout.ms", 2_000);
+
+  // prewarm the code cache
+  String CODE_CACHE_PREWARM_PROP = "CODE_CACHE_PREWARM";
+  String CODE_CACHE_LOCATION_PROP = "CODE_CACHE_LOCATION";
+  BooleanValidator EXEC_CODE_CACHE_SAVE_EXPR = new BooleanValidator("exec.code_cache.save_expr", false);
+
+  BooleanValidator ENABLE_RUNTIME_FILTER_ON_NON_PARTITIONED_PARQUET =  new BooleanValidator("exec.non_partitioned_parquet.enable_runtime_filter", false); // in beta right now
+  RangeLongValidator RUNTIME_FILTER_VALUE_FILTER_MAX_SIZE =  new RangeLongValidator("exec.non_partitioned_parquet.runtime_filter.max_size", 10, 1_000_000, 100);
+
+  String ENABLE_PARQUET_VECTORIZED_COMPLEX_READERS_KEY = "exec.parquet.enable_vectorized_complex";
+  BooleanValidator ENABLE_PARQUET_VECTORIZED_COMPLEX_READERS = new BooleanValidator(ENABLE_PARQUET_VECTORIZED_COMPLEX_READERS_KEY, true);
+
+  // Option to toggle support for mixed data types
+  BooleanValidator MIXED_TYPES_DISABLED = new BooleanValidator("store.disable.mixed_types", false);
 }

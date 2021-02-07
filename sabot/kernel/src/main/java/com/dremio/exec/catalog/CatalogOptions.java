@@ -30,9 +30,6 @@ import com.dremio.service.namespace.NamespaceService;
 @Options
 public final class CatalogOptions {
 
-  // Check for storage plugin status at time of creation of the plugin
-  public static final BooleanValidator STORAGE_PLUGIN_CHECK_STATE = new BooleanValidator("store.plugin.check_state", true);
-
   // Maximum time to wait when creating a storage plugin before failing.
   public static final LongValidator STORAGE_PLUGIN_CREATE_MAX = new PositiveLongValidator("store.plugin.wait_millis", TimeUnit.HOURS.toMillis(4), TimeUnit.SECONDS.toMillis(120));
 
@@ -58,6 +55,8 @@ public final class CatalogOptions {
   // How should (multi-)splits be compressed in the K/V store
   public static final TypeValidators.EnumValidator<NamespaceService.SplitCompression> SPLIT_COMPRESSION_TYPE = new TypeValidators.EnumValidator<>(
     "store.plugin.split_compression", NamespaceService.SplitCompression.class, NamespaceService.SplitCompression.SNAPPY);
+  // Disable cross source select
+  public static final BooleanValidator DISABLE_CROSS_SOURCE_SELECT = new BooleanValidator("planner.cross_source_select.disable", false);
 
   // Do not instantiate
   private CatalogOptions() {

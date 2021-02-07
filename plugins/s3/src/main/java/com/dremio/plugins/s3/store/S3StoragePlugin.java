@@ -18,6 +18,7 @@ package com.dremio.plugins.s3.store;
 import static com.dremio.service.users.SystemUser.SYSTEM_USERNAME;
 import static org.apache.hadoop.fs.s3a.Constants.ACCESS_KEY;
 import static org.apache.hadoop.fs.s3a.Constants.ALLOW_REQUESTER_PAYS;
+import static org.apache.hadoop.fs.s3a.Constants.CREATE_FILE_STATUS_CHECK;
 import static org.apache.hadoop.fs.s3a.Constants.FAST_UPLOAD;
 import static org.apache.hadoop.fs.s3a.Constants.MAXIMUM_CONNECTIONS;
 import static org.apache.hadoop.fs.s3a.Constants.MAX_THREADS;
@@ -31,6 +32,7 @@ import static org.apache.hadoop.fs.s3a.Constants.SERVER_SIDE_ENCRYPTION_KEY;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.nio.file.AccessMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +57,7 @@ import com.dremio.exec.store.SchemaConfig;
 import com.dremio.exec.store.dfs.FileSystemPlugin;
 import com.dremio.exec.store.dfs.IcebergTableProps;
 import com.dremio.io.file.FileSystem;
+import com.dremio.io.file.Path;
 import com.dremio.plugins.util.ContainerFileSystem.ContainerFailure;
 import com.dremio.sabot.exec.context.OperatorContext;
 import com.dremio.service.namespace.NamespaceKey;
@@ -62,6 +65,7 @@ import com.dremio.service.namespace.SourceState;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableSet;
 
 /**
  * S3 Extension of FileSystemStoragePlugin
@@ -164,6 +168,8 @@ public class S3StoragePlugin extends FileSystemPlugin<S3PluginConfig> {
     }
 
     finalProperties.add(new Property(ALLOW_REQUESTER_PAYS, Boolean.toString(config.requesterPays)));
+    finalProperties.add(new Property(CREATE_FILE_STATUS_CHECK, Boolean.toString(config.enableFileStatusCheck)));
+    logger.debug("getProperties: Create file status check: {}", config.enableFileStatusCheck);
 
     return finalProperties;
   }
@@ -178,6 +184,8 @@ public class S3StoragePlugin extends FileSystemPlugin<S3PluginConfig> {
     try {
       ensureDefaultName();
       S3FileSystem fs = getSystemUserFS().unwrap(S3FileSystem.class);
+      //This next call is just to validate that the path specified is valid
+      getSystemUserFS().access(getConfig().getPath(), ImmutableSet.of(AccessMode.READ));
       fs.refreshFileSystems();
       List<ContainerFailure> failures = fs.getSubFailures();
       if(failures.isEmpty()) {
@@ -190,12 +198,16 @@ public class S3StoragePlugin extends FileSystemPlugin<S3PluginConfig> {
         sb.append(f.getException().getMessage());
         sb.append("\n");
       }
-
-      return SourceState.warnState(sb.toString());
+      return SourceState.warnState(fileConnectionErrorMessage(getConfig().getPath()), sb.toString());
 
     } catch (Exception e) {
-      return SourceState.badState(e);
+      return SourceState.badState(fileConnectionErrorMessage(getConfig().getPath()), e);
     }
+  }
+
+  private String fileConnectionErrorMessage(Path filePath) {
+    return String.format("Could not connect to %s. Check your S3 data source settings and credentials.",
+        (filePath.toString().equals("/")) ? "S3 source" : filePath.toString());
   }
 
   private void ensureDefaultName() throws IOException {

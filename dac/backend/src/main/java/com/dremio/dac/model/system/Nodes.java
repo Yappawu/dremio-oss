@@ -15,9 +15,10 @@
  */
 package com.dremio.dac.model.system;
 
+import static com.dremio.common.util.DremioVersionUtils.isCompatibleVersion;
+
 import java.util.ArrayList;
 
-import com.dremio.common.util.DremioVersionInfo;
 import com.dremio.dac.api.JsonISODateTime;
 import com.dremio.exec.proto.CoordinationProtos;
 import com.dremio.exec.store.sys.NodeInstance;
@@ -28,6 +29,32 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * Wrapper on top of List<Node> to use in testing
  */
 public class Nodes extends ArrayList<Nodes.NodeInfo> {
+
+  /**
+   * Node Details
+   */
+  public enum NodeDetails {
+    NONE(null),
+    NO_RESPONSE("NO_RESPONSE"),
+    INVALID_VERSION("INVALID_VERSION");
+
+    private String value;
+
+    NodeDetails(String value) {
+      this.value = value;
+    }
+
+    public String toMessage(String message) {
+      if (value == null || message == null) {
+        return value;
+      }
+      return String.format("%s : %s", value, message);
+    }
+
+    public String getValue() {
+      return value;
+    }
+  };
 
   /**
    * Node info
@@ -43,9 +70,11 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
     private final Boolean isMaster;
     private final Boolean isCoordinator;
     private final Boolean isExecutor;
+    private final Boolean isCompatible;
     private final String nodeTag;
     private final String version;
     private final long start;
+    private final String details;
 
     @JsonCreator
     public NodeInfo(
@@ -59,10 +88,12 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
       @JsonProperty("isMaster") Boolean isMaster,
       @JsonProperty("isCoordinator") Boolean isCoordinator,
       @JsonProperty("isExecutor") Boolean isExecutor,
+      @JsonProperty("isCompatible") Boolean isCompatible,
       @JsonProperty("nodeTag") String nodeTag,
       @JsonProperty("version") String version,
       @JsonISODateTime
-      @JsonProperty("start") long start
+      @JsonProperty("start") long start,
+      @JsonProperty("details") String details
     ) {
       this.name = name;
       this.host = host;
@@ -74,12 +105,15 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
       this.isMaster = isMaster;
       this.isCoordinator = isCoordinator;
       this.isExecutor = isExecutor;
+      this.isCompatible = isCompatible;
       this.nodeTag = nodeTag;
       this.version = version;
       this.start = start;
+      this.details = details;
     }
 
     public static NodeInfo fromNodeInstance(NodeInstance nodeInstance) {
+      boolean isCompatible = isCompatibleVersion(nodeInstance.version);
       return new NodeInfo(
         nodeInstance.name,
         nodeInstance.hostname,
@@ -91,15 +125,18 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
         nodeInstance.is_master,
         nodeInstance.is_coordinator,
         nodeInstance.is_executor,
+        isCompatible,
         nodeInstance.node_tag,
         nodeInstance.version,
-        nodeInstance.start.getMillis());
+        nodeInstance.start.getMillis(),
+        isCompatible ? NodeDetails.NONE.toMessage(null) : NodeDetails.INVALID_VERSION.toMessage(nodeInstance.version));
     }
 
     public static NodeInfo fromEndpoint(CoordinationProtos.NodeEndpoint endpoint) {
       final boolean master = endpoint.getRoles().getMaster();
       final boolean coord = endpoint.getRoles().getSqlQuery();
       final boolean exec = endpoint.getRoles().getJavaExecutor();
+      boolean isCompatible = isCompatibleVersion(endpoint.getDremioVersion());
       return new NodeInfo(
         endpoint.getAddress(),
         endpoint.getAddress(),
@@ -111,9 +148,34 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
         master,
         coord,
         exec,
+        isCompatible,
         endpoint.getNodeTag(),
-        DremioVersionInfo.getVersion(),
-        endpoint.getStartTime()
+        endpoint.getDremioVersion(),
+        endpoint.getStartTime(),
+        isCompatible ? NodeDetails.NONE.toMessage(null) : NodeDetails.INVALID_VERSION.toMessage(endpoint.getDremioVersion())
+      );
+    }
+
+    public static NodeInfo fromUnresponsiveEndpoint(CoordinationProtos.NodeEndpoint endpoint) {
+      final boolean master = endpoint.getRoles().getMaster();
+      final boolean coord = endpoint.getRoles().getSqlQuery();
+      final boolean exec = endpoint.getRoles().getJavaExecutor();
+      return new NodeInfo(
+        endpoint.getAddress(),
+        endpoint.getAddress(),
+        endpoint.getAddress(),
+        endpoint.getUserPort(),
+        -1d,
+        -1d,
+        "red",
+        master,
+        coord,
+        exec,
+        isCompatibleVersion(endpoint.getDremioVersion()),
+        endpoint.getNodeTag(),
+        endpoint.getDremioVersion(),
+        endpoint.getStartTime(),
+        NodeDetails.NO_RESPONSE.toMessage(null)
       );
     }
 
@@ -155,6 +217,8 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
       return isExecutor;
     }
 
+    public Boolean getIsCompatible() { return isCompatible; }
+
     public String getNodeTag() {
       return nodeTag;
     }
@@ -165,6 +229,10 @@ public class Nodes extends ArrayList<Nodes.NodeInfo> {
 
     public long getStart() {
       return start;
+    }
+
+    public String getDetails() {
+      return details;
     }
   }
 }

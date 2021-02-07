@@ -15,6 +15,8 @@
  */
 package com.dremio.sabot.exec.context;
 
+import static com.dremio.common.perf.StatsCollectionEligibilityRegistrar.isEligible;
+
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,6 +42,7 @@ import com.dremio.exec.proto.UserBitShared.OperatorProfile.Builder;
 import com.dremio.exec.proto.UserBitShared.OperatorProfileDetails;
 import com.dremio.exec.proto.UserBitShared.SlowIOInfo;
 import com.dremio.exec.proto.UserBitShared.StreamProfile;
+import com.dremio.io.file.Path;
 
 import de.vandermeer.asciitable.v2.V2_AsciiTable;
 import de.vandermeer.asciitable.v2.render.V2_AsciiTableRenderer;
@@ -81,10 +84,32 @@ public class OperatorStats {
   // misc operator details that are saved in the profile.
   private OperatorProfileDetails profileDetails;
 
+
   // Need this wrapper so that the caller don't have to handle exception from close().
   public interface WaitRecorder extends AutoCloseable {
     @Override
     void close();
+  }
+
+  public class MetadataWaitRecorder implements WaitRecorder {
+
+    private String path;
+    private WaitRecorder wr;
+
+    public MetadataWaitRecorder(String filePath, WaitRecorder recorder) {
+      path = filePath;
+      wr = recorder;
+    }
+
+    @Override
+    public void close() {
+      updateReadIOStatsMetadata(System.nanoTime() - stateMark[currentState.ordinal()], path);
+      wr.close();
+    }
+  }
+
+  private MetadataWaitRecorder createMetadataWaitRecorder(String path, WaitRecorder wr) {
+    return new MetadataWaitRecorder(path, wr);
   }
 
   // No-op implementation of WaitRecorder.
@@ -92,7 +117,7 @@ public class OperatorStats {
 
   // Recorder that does a stopWait() on close. This can be used in try-with-resources context.
   // Note that the close for this not idempotent.
-  private WaitRecorder recorder = () -> { stopWait(); };
+  final WaitRecorder recorder = this::stopWait;
 
   public class IOStats {
     public final AtomicLong minIOTime = new AtomicLong(Long.MAX_VALUE);
@@ -100,10 +125,13 @@ public class OperatorStats {
     public final AtomicLong totalIOTime = new AtomicLong(0);
     public final AtomicInteger numIO = new AtomicInteger(0);
     public final List<SlowIOInfo> slowIOInfoList = new ArrayList<>();
+    private long lastSlowIOLoggingTime = 0;
   }
 
   private IOStats readIOStats;
   private IOStats writeIOStats;
+
+  private IOStats metadataReadIOStats;
 
   public void createReadIOStats() {
     if (this.readIOStats != null) {
@@ -119,8 +147,19 @@ public class OperatorStats {
     this.writeIOStats = new IOStats();
   }
 
+  public void createMetadataReadIOStats() {
+    if (this.metadataReadIOStats != null) {
+      return;
+    }
+    this.metadataReadIOStats = new IOStats();
+  }
+
   public IOStats getReadIOStats() {
     return readIOStats;
+  }
+
+  public IOStats getMetadataReadIOStats() {
+    return metadataReadIOStats;
   }
 
   public IOStats getWriteIOStats() {
@@ -262,6 +301,11 @@ public class OperatorStats {
     // revert to the saved state
     startState(savedState);
     savedState = State.NONE;
+  }
+
+  public void moveProcessingToWait(long nanos) {
+    this.stateNanos[State.WAIT.ordinal()]+=nanos;
+    this.stateNanos[State.PROCESSING.ordinal()]-=nanos;
   }
 
   /*
@@ -415,6 +459,10 @@ public class OperatorStats {
     this.profileDetails = details;
   }
 
+  public OperatorProfileDetails getProfileDetails() {
+    return this.profileDetails;
+  }
+
   @Override
   public String toString(){
     String[] names = OperatorMetricRegistry.getMetricNames(operatorType);
@@ -464,15 +512,27 @@ public class OperatorStats {
     return sb.toString();
   }
 
-
-
   public static WaitRecorder getWaitRecorder(OperatorStats operatorStats) {
-    if (operatorStats == null || !operatorStats.checkAndStartWait()) {
-      // If the operatorStats is missing, or if already in wait recording mode, return NO_OP.
+    if (operatorStats == null || !isEligible() || !operatorStats.checkAndStartWait()) {
+      /*
+        Return a NO_OP_RECORDER if any of the conditions are met:
+        1. If the operatorStats is missing
+        2. If the thread this method is invoked from is not eligible for stats collection
+        3. If operatorStats is already in WAIT state
+       */
       return NO_OP_RECORDER;
     } else {
       return operatorStats.recorder;
     }
+  }
+
+  public static WaitRecorder getMetadataWaitRecorder(OperatorStats operatorStats, Path path) {
+      if(operatorStats == null || path == null) {
+        return NO_OP_RECORDER;
+      }
+      else {
+        return operatorStats.createMetadataWaitRecorder(path.toString(), OperatorStats.getWaitRecorder(operatorStats));
+      }
   }
 
   private void updateIOStats(IOStats ioStats, long elapsed, String filePath, long n, long offset){
@@ -503,6 +563,10 @@ public class OperatorStats {
 
   public void updateWriteIOStats(long elapsed, String filePath, long n, long offset) {
     updateIOStats(writeIOStats, elapsed, filePath, n, offset);
+  }
+
+  public void updateReadIOStatsMetadata(long elapsed, String path) {
+    updateIOStats(metadataReadIOStats, elapsed, path, 0, 0 );
   }
 
 }

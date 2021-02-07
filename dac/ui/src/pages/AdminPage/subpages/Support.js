@@ -27,23 +27,31 @@ import { getErrorMessage } from '@app/reducers/resources/view';
 
 import { description } from 'uiTheme/radium/forms';
 import { formContext } from 'uiTheme/radium/typography';
-import './Support.less';
 
-import ViewStateWrapper from 'components/ViewStateWrapper';
-import SimpleButton from 'components/Buttons/SimpleButton';
-import TextField from 'components/Fields/TextField';
+import ViewStateWrapper from '@app/components/ViewStateWrapper';
+import SimpleButton from '@app/components/Buttons/SimpleButton';
+import TextField from '@app/components/Fields/TextField';
 import ApiUtils from '@app/utils/apiUtils/apiUtils';
-import SupportAccess, {RESERVED as SUPPORT_ACCESS_RESERVED} from '@inject/pages/AdminPage/subpages/SupportAccess';
-import FormUnsavedRouteLeave from 'components/Forms/FormUnsavedRouteLeave';
+import SupportAccess, { RESERVED as SUPPORT_ACCESS_RESERVED } from '@inject/pages/AdminPage/subpages/SupportAccess';
+import FormUnsavedRouteLeave from '@app/components/Forms/FormUnsavedRouteLeave';
+import AnalyzeTools, { RESERVED as ANALYZE_TOOLS_RESERVED } from '@app/pages/AdminPage/subpages/AnalyzeTools';
 
 import Header from '../components/Header';
 import SettingsMicroForm from './SettingsMicroForm';
 import { LABELS, LABELS_IN_SECTIONS } from './settingsConfig';
 import InternalSupportEmail, { RESERVED as INTERNAL_SUPPORT_RESERVED } from './InternalSupportEmail';
 
+import './Support.less';
+
 export const VIEW_ID = 'SUPPORT_SETTINGS_VIEW_ID';
 
-export const RESERVED = new Set([...(SUPPORT_ACCESS_RESERVED || []), ...INTERNAL_SUPPORT_RESERVED]);
+export const RESERVED = new Set(
+  [
+    ...(SUPPORT_ACCESS_RESERVED || []),
+    ...INTERNAL_SUPPORT_RESERVED,
+    ...ANALYZE_TOOLS_RESERVED
+  ]
+);
 
 export class Support extends PureComponent {
   static propTypes = {
@@ -196,7 +204,7 @@ export class Support extends PureComponent {
     const advancedForm = <form style={{flex: '0 0 auto'}} onSubmit={this.addAdvanced}>
       <TextField placeholder={la('Support Key')} data-qa='support-key-search'/>
       <SimpleButton buttonStyle='secondary' data-qa='support-key-search-btn' submitting={this.state.getSettingInProgress}
-        style={{verticalAlign: 'bottom', width: 'auto'}}>
+        style={{display: 'inline-block', marginLeft: '6px'}}>
         {la('Show')}
       </SimpleButton>
     </form>;
@@ -204,12 +212,21 @@ export class Support extends PureComponent {
     return <div className='support-settings'>
       <Header>{la('Support Settings')}</Header>
 
-      <ViewStateWrapper viewState={viewStateWithoutError} hideChildrenWhenFailed={false}>
+      <ViewStateWrapper
+        viewState={viewStateWithoutError}
+        hideChildrenWhenFailed={false}
+        style={{overflow: 'auto', height: '100%', flex: '1 1 auto'}}
+      >
         {!this.props.settings.size ? null : <div>
           {SupportAccess && <SupportAccess
             renderSettings={this.renderSettingsMicroForm}
             descriptionStyle={styles.description}
           />}
+          <AnalyzeTools
+            renderSettings={this.renderSettingsMicroForm}
+            descriptionStyle={styles.description}
+            settings={this.props.settings}
+          />
           <InternalSupportEmail
             renderSettings={this.renderSettingsMicroForm}
             descriptionStyle={styles.description}

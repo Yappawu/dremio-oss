@@ -22,6 +22,7 @@ import static org.junit.Assert.assertEquals;
 import java.math.BigDecimal;
 import java.util.Random;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DecimalVector;
@@ -33,8 +34,6 @@ import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.Test;
 
 import com.dremio.sabot.BaseTestWithAllocator;
-
-import io.netty.buffer.ArrowBuf;
 
 public class TestBoundedPivots extends BaseTestWithAllocator {
   private static final Random RAND = new Random(2342983723452L);
@@ -401,7 +400,7 @@ public class TestBoundedPivots extends BaseTestWithAllocator {
         actualNulls[i] = (buf.getInt(((i * blockWidth) + def.getNullByteOffset())) >>> nullBitOffsetA) & 1;
         if (actualNulls[i] != 0) {
           buf.getBytes((i * blockWidth) + def.getOffset(), valueBuf, 0, 16);
-          actualValues[i] = DecimalUtility.getBigDecimalFromArrowBuf(valueBuf, 0, 0);
+          actualValues[i] = DecimalUtility.getBigDecimalFromArrowBuf(valueBuf, 0, 0, DecimalVector.TYPE_WIDTH);
         }
       }
     }

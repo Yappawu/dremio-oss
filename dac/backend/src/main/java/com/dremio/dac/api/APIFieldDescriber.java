@@ -296,6 +296,21 @@ public class APIFieldDescriber {
     }
 
     @Override
+    public Void visit(ArrowType.LargeBinary largeBinary) {
+      throw new UnsupportedOperationException("LargeBinary is not supported");
+    }
+
+    @Override
+    public Void visit(ArrowType.LargeList largeList) {
+      throw new UnsupportedOperationException("LargeList is not supported");
+    }
+
+    @Override
+    public Void visit(ArrowType.LargeUtf8 largeUtf8) {
+      throw new UnsupportedOperationException("LargeUtf8 is not supported");
+    }
+
+    @Override
     public Void visit(ArrowType.Duration interval) {
       throw new UnsupportedOperationException("Duration is not supported");
     }

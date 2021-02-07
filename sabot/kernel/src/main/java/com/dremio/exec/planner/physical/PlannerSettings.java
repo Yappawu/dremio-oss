@@ -28,8 +28,9 @@ import org.apache.calcite.util.CancelFlag;
 import com.dremio.common.config.SabotConfig;
 import com.dremio.exec.ExecConstants;
 import com.dremio.exec.catalog.conf.SourceType;
-import com.dremio.exec.server.ClusterResourceInformation;
+import com.dremio.exec.proto.CoordinationProtos.NodeEndpoint;
 import com.dremio.exec.server.options.CachingOptionManager;
+import com.dremio.exec.testing.ExecutionControls;
 import com.dremio.options.OptionManager;
 import com.dremio.options.OptionValidator;
 import com.dremio.options.OptionValue;
@@ -45,7 +46,9 @@ import com.dremio.options.TypeValidators.QueryLevelOptionValidation;
 import com.dremio.options.TypeValidators.RangeDoubleValidator;
 import com.dremio.options.TypeValidators.RangeLongValidator;
 import com.dremio.options.TypeValidators.StringValidator;
+import com.dremio.resource.GroupResourceInformation;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableSet;
 
 @Options
@@ -66,6 +69,8 @@ public class PlannerSettings implements Context{
   public static final double DEFAULT_FILTER_MAX_SELECTIVITY_ESTIMATE_FACTOR = 1.0d;
   // default off heap memory for planning (256M)
   private static final long DEFAULT_MAX_OFF_HEAP_ALLOCATION_IN_BYTES = 256 * 1024 * 1024;
+  private static final long DEFAULT_BROADCAST_THRESHOLD = 10000000;
+  private static final long DEFAULT_CELL_COUNT_THRESHOLD = 10 * DEFAULT_BROADCAST_THRESHOLD; // 10 times DEFAULT_BROADCAST_THRESHOLD
   public static final LongValidator PLANNER_MEMORY_RESERVATION = new RangeLongValidator("planner.reservation_bytes",
     0L, Long.MAX_VALUE, 0L);
   public static final LongValidator PLANNER_MEMORY_LIMIT = new RangeLongValidator("planner.memory_limit",
@@ -83,9 +88,11 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator MULTIPHASE = new BooleanValidator("planner.enable_multiphase_agg", true);
   public static final OptionValidator BROADCAST = new BooleanValidator("planner.enable_broadcast_join", true);
   public static final LongValidator BROADCAST_MIN_THRESHOLD = new PositiveLongValidator("planner.broadcast_min_threshold", MAX_BROADCAST_THRESHOLD, 500000);
-  public static final LongValidator BROADCAST_THRESHOLD = new PositiveLongValidator("planner.broadcast_threshold", MAX_BROADCAST_THRESHOLD, 10000000);
+  public static final LongValidator BROADCAST_THRESHOLD = new PositiveLongValidator("planner.broadcast_threshold", MAX_BROADCAST_THRESHOLD, DEFAULT_BROADCAST_THRESHOLD);
+  public static final LongValidator BROADCAST_CELL_COUNT_THRESHOLD = new PositiveLongValidator("planner.broadcast_cellcount_threshold", MAX_BROADCAST_THRESHOLD, DEFAULT_CELL_COUNT_THRESHOLD);
   public static final DoubleValidator BROADCAST_FACTOR = new RangeDoubleValidator("planner.broadcast_factor", 0, Double.MAX_VALUE, 2.0d);
   public static final DoubleValidator NESTEDLOOPJOIN_FACTOR = new RangeDoubleValidator("planner.nestedloopjoin_factor", 0, Double.MAX_VALUE, 100.0d);
+  public static final LongValidator NESTEDLOOPJOIN_MAX_CONDITION_NODES = new PositiveLongValidator("planner.nestedloopjoin_max_condition_nodes", Long.MAX_VALUE, 120);
   public static final BooleanValidator NLJOIN_FOR_SCALAR = new BooleanValidator("planner.enable_nljoin_for_scalar_only", false);
   public static final DoubleValidator JOIN_ROW_COUNT_ESTIMATE_FACTOR = new RangeDoubleValidator("planner.join.row_count_estimate_factor", 0, Double.MAX_VALUE, 1.0d);
   public static final BooleanValidator MUX_EXCHANGE = new BooleanValidator("planner.enable_mux_exchange", true);
@@ -101,7 +108,10 @@ public class PlannerSettings implements Context{
   public static final LongValidator STREAM_AGG_MAX_GROUP = new PositiveLongValidator("planner.streamagg.max_group_key", Long.MAX_VALUE, 64);
   public static final BooleanValidator STREAM_AGG_WITH_GROUPS = new BooleanValidator("planner.streamagg.allow_grouping", false);
   public static final String ENABLE_DECIMAL_DATA_TYPE_KEY = "planner.enable_decimal_data_type";
+  public static final LongValidator HEP_PLANNER_MATCH_LIMIT = new PositiveLongValidator("planner.hep_match_limit", Integer.MAX_VALUE, Integer.MAX_VALUE);
   public static final BooleanValidator TRANSITIVE_FILTER_JOIN_PUSHDOWN = new BooleanValidator("planner.filter.transitive_pushdown", true);
+  public static final BooleanValidator TRANSITIVE_FILTER_NOT_NULL_EXPR_PUSHDOWN = new BooleanValidator("planner.filter.transitive_pushdown_not_null_expr", false); // Until DX-26452 is fixes
+  public static final BooleanValidator ENABLE_RUNTIME_FILTER = new BooleanValidator("planner.filter.runtime_filter", true);
   public static final BooleanValidator ENABLE_TRANSPOSE_PROJECT_FILTER_LOGICAL = new BooleanValidator("planner.experimental.tpf_logical", false);
   public static final BooleanValidator ENABLE_PROJECT_CLEANUP_LOGICAL = new BooleanValidator("planner.experimental.pclean_logical", false);
   public static final BooleanValidator ENABLE_CROSS_JOIN = new BooleanValidator("planner.enable_cross_join", true);
@@ -113,6 +123,8 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator UNIONALL_DISTRIBUTE = new BooleanValidator(UNIONALL_DISTRIBUTE_KEY, true);
   public static final LongValidator PLANNING_MAX_MILLIS = new LongValidator("planner.timeout_per_phase_ms", 60_000);
   public static final BooleanValidator RELATIONAL_PLANNING = new BooleanValidator("planner.enable_relational_planning", true);
+  public static final BooleanValidator FULL_NESTED_SCHEMA_SUPPORT = new BooleanValidator("planner.enable_full_nested_schema", true);
+  public static final BooleanValidator COMPLEX_TYPE_FILTER_PUSHDOWN = new BooleanValidator("planner.complex_type_filter_pushdown", true);
 
   public static final BooleanValidator ENABLE_LEAF_LIMITS = new BooleanValidator("planner.leaf_limit_enable", false);
   public static final RangeLongValidator LEAF_LIMIT_SIZE  = new RangeLongValidator("planner.leaf_limit_size", 1, Long.MAX_VALUE, 10000);
@@ -120,6 +132,10 @@ public class PlannerSettings implements Context{
 
   public static final BooleanValidator ENABLE_OUTPUT_LIMITS = new BooleanValidator("planner.output_limit_enable", false);
   public static final RangeLongValidator OUTPUT_LIMIT_SIZE  = new RangeLongValidator("planner.output_limit_size", 1, Long.MAX_VALUE, 1_000_000);
+
+  // number of records (per minor fragment) is truncated to at-least MIN_RECORDS_PER_FRAGMENT
+  // if num of records for the fragment is greater than this.
+  public static final Long MIN_RECORDS_PER_FRAGMENT  = 500L;
 
   public static final BooleanValidator VDS_AUTO_FIX = new BooleanValidator("validator.enable_vds_autofix", true);
 
@@ -138,7 +154,14 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator ENABLE_VECTORIZED_PARQUET_DECIMAL = new BooleanValidator
     (ENABLE_VECTORIZED_PARQUET_DECIMAL_KEY, true);
 
+  public static final BooleanValidator ENABLE_PARQUET_IN_EXPRESSION_PUSH_DOWN =
+          new BooleanValidator("planner.parquet.in_expression_push_down", true);
+  public static final BooleanValidator ENABLE_PARQUET_MULTI_COLUMN_FILTER_PUSH_DOWN =
+          new BooleanValidator("planner.parquet.multi_column_filter_push_down", true);
+
   public static final LongValidator MAX_NODES_PER_PLAN = new LongValidator("planner.max_nodes_per_plan", 25_000);
+
+  public static final BooleanValidator ENABLE_ICEBERG_EXECUTION = new BooleanValidator("dremio.execution.v2", false);
   /**
    * Policy regarding storing query results
    */
@@ -169,6 +192,12 @@ public class PlannerSettings implements Context{
   public static final BooleanValidator ENABLE_REDUCE_PROJECT = new BooleanValidator("planner.enable_reduce_project", true);
   public static final BooleanValidator ENABLE_REDUCE_FILTER = new BooleanValidator("planner.enable_reduce_filter", true);
   public static final BooleanValidator ENABLE_REDUCE_CALC = new BooleanValidator("planner.enable_reduce_calc", true);
+
+  // Filter reduce expression rules used in conjunction with transitive filter
+  public static final BooleanValidator ENABLE_TRANSITIVE_REDUCE_PROJECT = new BooleanValidator("planner.enable_transitive_reduce_project", false);
+  public static final BooleanValidator ENABLE_TRANSITIVE_REDUCE_FILTER = new BooleanValidator("planner.enable_transitive_reduce_filter", false);
+  public static final BooleanValidator ENABLE_TRANSITIVE_REDUCE_CALC = new BooleanValidator("planner.enable_transitive_reduce_calc", false);
+
   public static final BooleanValidator ENABLE_TRIVIAL_SINGULAR = new BooleanValidator("planner.enable_trivial_singular", true);
 
   public static final BooleanValidator ENABLE_SORT_ROUND_ROBIN = new BooleanValidator("planner.enable_sort_round_robin", true);
@@ -206,7 +235,7 @@ public class PlannerSettings implements Context{
   public static final DoubleValidator FILTER_MAX_SELECTIVITY_ESTIMATE_FACTOR =
       new RangeDoubleValidator("planner.filter.max_selectivity_estimate_factor", 0.0, 1.0, DEFAULT_FILTER_MAX_SELECTIVITY_ESTIMATE_FACTOR);
 
-  public static final BooleanValidator REMOVE_ROW_ADJUSTMENT = new BooleanValidator("planner.remove_rowcount_adjustment", false);
+  public static final BooleanValidator REMOVE_ROW_ADJUSTMENT = new BooleanValidator("planner.remove_rowcount_adjustment", true);
 
   public static final BooleanValidator ENABLE_SCAN_MIN_COST = new BooleanValidator("planner.cost.minimum.enable", true);
   public static final DoubleValidator DEFAULT_SCAN_MIN_COST = new DoubleValidator("planner.default.min_cost_per_split", 0);
@@ -257,16 +286,31 @@ public class PlannerSettings implements Context{
   public static final PositiveLongValidator DATASET_MAX_SPLIT_LIMIT = new PositiveLongValidator("planner.dataset_max_split_limit", Integer.MAX_VALUE, 300_000);
 
   private final SabotConfig sabotConfig;
+  private final ExecutionControls executionControls;
   public final OptionManager options;
-  private final ClusterResourceInformation clusterInfo;
+  private Supplier<GroupResourceInformation> resourceInformation;
 
   // This flag is used by AbstractRelOptPlanner to set it's "cancelFlag".
-  private final CancelFlag cancelFlag = new CancelFlag(new AtomicBoolean());
+  private final CancelFlag cancelFlag = new CancelFlag(new AtomicBoolean(false));
 
-  public PlannerSettings(SabotConfig config, OptionManager options, ClusterResourceInformation clusterInfo){
+  // This is used to set reason for cancelling the query in DremioHepPlanner and DremioVolcanoPlanner
+  private String cancelReason = "";
+  private String cancelContext = null;
+  private volatile boolean isCancelledByHeapMonitor = false;
+
+  private NodeEndpoint nodeEndpoint = null;
+
+  public PlannerSettings(SabotConfig config, OptionManager options,
+                         Supplier<GroupResourceInformation> resourceInformation) {
+    this(config, options, resourceInformation, null);
+  }
+
+  public PlannerSettings(SabotConfig config, OptionManager options,
+                         Supplier<GroupResourceInformation> resourceInformation, ExecutionControls executionControls) {
     this.sabotConfig = config;
     this.options = new CachingOptionManager(options);
-    this.clusterInfo = clusterInfo;
+    this.resourceInformation = resourceInformation;
+    this.executionControls = executionControls;
   }
 
   public SabotConfig getSabotConfig() {
@@ -287,6 +331,10 @@ public class PlannerSettings implements Context{
 
   public final long getMaxNodesPerPlan() {
     return options.getOption(MAX_NODES_PER_PLAN);
+  }
+
+  public final long getMaxNLJConditionNodesPerPlan() {
+    return options.getOption(NESTEDLOOPJOIN_MAX_CONDITION_NODES);
   }
 
   public long getLeafLimit(){
@@ -310,7 +358,7 @@ public class PlannerSettings implements Context{
   }
 
   public int numEndPoints() {
-    return numEndPoints;
+    return resourceInformation.get().getExecutorNodeCount();
   }
 
   public double getRowCountEstimateFactor(){
@@ -323,6 +371,18 @@ public class PlannerSettings implements Context{
 
   public boolean isTransitiveFilterPushdownEnabled() {
     return options.getOption(TRANSITIVE_FILTER_JOIN_PUSHDOWN);
+  }
+
+  public boolean isTransitiveFilterNotNullExprPushdownEnabled() {
+    return options.getOption(TRANSITIVE_FILTER_NOT_NULL_EXPR_PUSHDOWN);
+  }
+
+  public boolean isComplexTypeFilterPushdownEnabled() {
+    return options.getOption(COMPLEX_TYPE_FILTER_PUSHDOWN) && options.getOption(ExecConstants.ENABLE_PARQUET_VECTORIZED_COMPLEX_READERS);
+  }
+
+  public boolean isRuntimeFilterEnabled() {
+    return options.getOption(ENABLE_RUNTIME_FILTER);
   }
 
   public boolean isTransposeProjectFilterLogicalEnabled() {
@@ -349,10 +409,6 @@ public class PlannerSettings implements Context{
     return useDefaultCosting;
   }
 
-  public void setNumEndPoints(int numEndPoints) {
-    this.numEndPoints = numEndPoints;
-  }
-
   public void setUseDefaultCosting(boolean defcost) {
     this.useDefaultCosting = defcost;
   }
@@ -368,8 +424,11 @@ public class PlannerSettings implements Context{
    * @return max width per node
    */
   long getMaxWidthPerNode() {
-    Preconditions.checkState(clusterInfo != null, "Need a valid reference for Cluster Resource Information");
-    return clusterInfo.getAverageExecutorCores(options);
+    Preconditions.checkNotNull(resourceInformation, "Need a valid reference for " +
+      "Resource Information");
+    Preconditions.checkNotNull(resourceInformation.get(), "Need a valid reference for " +
+      "Resource Information");
+    return resourceInformation.get().getAverageExecutorCores(options);
   }
 
   public boolean isHashAggEnabled() {
@@ -398,6 +457,18 @@ public class PlannerSettings implements Context{
 
   public boolean isReduceCalcExpressionsEnabled() {
     return options.getOption(ENABLE_REDUCE_CALC.getOptionName()).getBoolVal();
+  }
+
+  public boolean isTransitiveReduceProjectExpressionsEnabled() {
+    return options.getOption(ENABLE_TRANSITIVE_REDUCE_PROJECT.getOptionName()).getBoolVal();
+  }
+
+  public boolean isTransitiveReduceFilterExpressionsEnabled() {
+    return options.getOption(ENABLE_TRANSITIVE_REDUCE_FILTER.getOptionName()).getBoolVal();
+  }
+
+  public boolean isTransitiveReduceCalcExpressionsEnabled() {
+    return options.getOption(ENABLE_TRANSITIVE_REDUCE_CALC.getOptionName()).getBoolVal();
   }
 
   public boolean isGlobalDictionariesEnabled() {
@@ -522,7 +593,7 @@ public class PlannerSettings implements Context{
    * @return number of executor nodes
    */
   public int getExecutorCount() {
-    return clusterInfo.getExecutorNodeCount();
+    return resourceInformation.get().getExecutorNodeCount();
   }
 
   public boolean isJoinOptimizationEnabled() {
@@ -545,6 +616,10 @@ public class PlannerSettings implements Context{
     return (int) options.getOption(DATASET_MAX_SPLIT_LIMIT);
   }
 
+  public boolean isFullNestedSchemaSupport() {
+    return options.getOption(FULL_NESTED_SCHEMA_SUPPORT);
+  }
+
   public void pullDistributionTrait(boolean pullDistributionTrait) {
     this.pullDistributionTrait = pullDistributionTrait;
   }
@@ -555,10 +630,12 @@ public class PlannerSettings implements Context{
       return (T) this;
     } else if(clazz == CalciteConnectionConfig.class){
       return (T) CONFIG;
-    } if (clazz == SabotConfig.class) {
+    } else if (clazz == SabotConfig.class) {
       return (T) sabotConfig;
     } else if (CancelFlag.class.isAssignableFrom(clazz)) {
       return clazz.cast(cancelFlag);
+    } else if (clazz == ExecutionControls.class) {
+      return (T) executionControls;
     }
     return null;
   }
@@ -577,4 +654,27 @@ public class PlannerSettings implements Context{
     }
   }
 
+  public void cancelPlanning(String cancelReason, NodeEndpoint nodeEndpoint, String cancelContext, boolean isCancelledByHeapMonitor) {
+    this.cancelReason = cancelReason;
+    this.nodeEndpoint = nodeEndpoint;
+    this.cancelContext = cancelContext;
+    this.isCancelledByHeapMonitor = isCancelledByHeapMonitor;
+    cancelFlag.requestCancel();
+  }
+
+  public String getCancelReason() {
+    return cancelReason;
+  }
+
+  public NodeEndpoint getNodeEndpoint() {
+    return nodeEndpoint;
+  }
+
+  public String getCancelContext() {
+    return cancelContext;
+  }
+
+  public boolean isCancelledByHeapMonitor() {
+    return isCancelledByHeapMonitor;
+  }
 }

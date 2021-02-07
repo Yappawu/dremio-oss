@@ -37,7 +37,7 @@ import com.dremio.exec.expr.annotations.Workspace;
 import com.dremio.exec.expr.fn.FunctionErrorContext;
 import org.apache.arrow.vector.holders.*;
 import javax.inject.Inject;
-import io.netty.buffer.ArrowBuf;
+import org.apache.arrow.memory.ArrowBuf;
 
 /**
  * generated from ${.template_name} ${type.from} ${type.to} ${type.major}
@@ -59,7 +59,7 @@ public class Cast${type.from}${type.to} implements SimpleFunction{
   <#if type.to == 'VarChar'>
 
     //Do 1st scan to counter # of character in string.
-    int charCount = com.dremio.exec.expr.fn.impl.StringFunctionUtil.getUTF8CharLength(in.buffer.asNettyBuffer(), in.start, in.end, errCtx);
+    int charCount = com.dremio.exec.expr.fn.impl.StringFunctionUtil.getUTF8CharLength(io.netty.buffer.NettyArrowBuf.unwrapBuffer(in.buffer), in.start, in.end, errCtx);
 
     //if input length <= target_type length, do nothing
     //else if target length = 0, it means cast wants all the characters in the input. Do nothing.
@@ -69,8 +69,8 @@ public class Cast${type.from}${type.to} implements SimpleFunction{
     if (charCount <= length.value || length.value == 0 ) {
       out.end = in.end;
     } else {
-      out.end = com.dremio.exec.expr.fn.impl.StringFunctionUtil.getUTF8CharPosition(in.buffer
-  .asNettyBuffer(), in.start, in.end, (int)length.value, errCtx);
+      out.end = com.dremio.exec.expr.fn.impl.StringFunctionUtil.getUTF8CharPosition(io.netty.buffer.NettyArrowBuf.unwrapBuffer(in.buffer),
+  in.start, in.end, (int)length.value, errCtx);
     }
 
   <#elseif type.to == 'VarBinary'>

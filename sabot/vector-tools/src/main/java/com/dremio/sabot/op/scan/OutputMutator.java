@@ -15,13 +15,12 @@
  */
 package com.dremio.sabot.op.scan;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.util.CallBack;
 
 import com.dremio.exec.exception.SchemaChangeException;
-
-import io.netty.buffer.ArrowBuf;
 
 /**
  * Interface that allows a record reader to modify the current schema.
@@ -46,6 +45,10 @@ public interface OutputMutator {
    *           If the addition of this field is incompatible with this OutputMutator's capabilities.
    */
   public <T extends ValueVector> T addField(Field field, Class<T> clazz) throws SchemaChangeException;
+
+  default void removeField(Field field) {
+    throw new UnsupportedOperationException();
+  }
 
   public ValueVector getVector(String name);
 
